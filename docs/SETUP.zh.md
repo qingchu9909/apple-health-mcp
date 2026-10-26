@@ -41,7 +41,7 @@ curl -fsSL https://raw.githubusercontent.com/qingchu9909/apple-health-mcp/main/d
 
 ## 2. iPhone：Health Auto Export
 
-打开 App → 侧边栏 **Automations** → **New Automation**，建两个自动化。两个都是 **REST API** 类型，URL 和 Header 一样：
+打开 App → 侧边栏 **Automations** → **New Automation**，建两个自动化。两个都是 **REST API** 类型，URL 和 Header 一样（App 是繁体中文界面时，Header 名和值分别填在「金鑰」和「數值」两格，「加入標題列」是再加一行）：
 
 | 项目 | 填写 |
 | --- | --- |
@@ -55,6 +55,8 @@ curl -fsSL https://raw.githubusercontent.com/qingchu9909/apple-health-mcp/main/d
 | Data Type | Health Metrics |
 | Select Health Metrics | 全选 |
 | Export Format | CSV |
+| Summarize Data | 开 |
+| Time Grouping | Days（服务器按每天一行来读） |
 | Date Range | **Default**（前一整天 + 今天到目前为止。每次都会重发完整的昨天，服务器自动去重，漏掉的同步也能补上） |
 | Sync Cadence | 每 1 小时 |
 
