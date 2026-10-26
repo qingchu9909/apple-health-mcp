@@ -106,6 +106,32 @@ def _read_csv_tolerant(path: pathlib.Path) -> pd.DataFrame:
             raw = tail.strip()
     df = pd.read_csv(io.BytesIO(raw), parse_dates=["Date/Time"])
     df["Date/Time"] = _naive_local(df["Date/Time"])
+    return _normalize_units(df)
+
+
+# Health Auto Export names each column after the unit chosen in the Health
+# app, so the same metric can arrive as "Active Energy (kcal)" for one user
+# and "Active Energy (kJ)" for another. The tools read the metric units on
+# the left; the alternatives are converted into them when a file is read.
+_UNIT_ALIASES = {
+    "Active Energy (kJ)": ("Active Energy (kcal)", lambda v: v * 4.184),
+    "Walking + Running Distance (km)": ("Walking + Running Distance (mi)", lambda v: v * 1.609344),
+    "Walking Speed (km/hr)": ("Walking Speed (mi/hr)", lambda v: v * 1.609344),
+    "Apple Sleeping Wrist Temperature (degC)": (
+        "Apple Sleeping Wrist Temperature (degF)",
+        lambda v: (v - 32) * 5 / 9,
+    ),
+    "Blood Glucose (mmol/L)": ("Blood Glucose (mg/dL)", lambda v: v / 18.016),
+}
+
+
+def _normalize_units(df: pd.DataFrame) -> pd.DataFrame:
+    for canonical, (alias, convert) in _UNIT_ALIASES.items():
+        if alias not in df.columns:
+            continue
+        converted = convert(pd.to_numeric(df[alias], errors="coerce"))
+        df[canonical] = df[canonical].fillna(converted) if canonical in df.columns else converted
+        df = df.drop(columns=[alias])
     return df
 
 

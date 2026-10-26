@@ -44,7 +44,7 @@ def extract_csv(body: bytes) -> bytes:
     used. The CSV sits between the first blank line and the closing boundary
     (`--Boundary-...--`).
     """
-    if body.startswith(b"--Boundary"):
+    if body.startswith(b"--"):  # a CSV export always starts with its header row
         parts = body.split(b"\r\n\r\n", 1)
         if len(parts) == 2:
             csv_and_tail = parts[1]

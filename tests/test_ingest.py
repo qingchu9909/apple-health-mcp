@@ -107,3 +107,14 @@ def test_no_temporary_files_are_left_behind(tmp_path: Path, monkeypatch):
     assert leftovers == []
     assert len(list((tmp_path / "data").glob("health_*.csv"))) == 1
     assert (tmp_path / "workouts" / "W1.json").exists()
+
+
+def test_any_multipart_boundary_is_unwrapped(tmp_path: Path, monkeypatch):
+    _, client = _load(tmp_path, monkeypatch)
+    body = (
+        b"--Xyz123\r\nContent-Disposition: form-data; name=\"f\"; filename=\"a.csv\"\r\n"
+        b"Content-Type: text/csv\r\n\r\nDate/Time,Step Count (count)\r\n2026-04-01 00:00:00,5\r\n--Xyz123--\r\n"
+    )
+    client.post("/ingest", content=body, headers={**AUTH, "Content-Type": "multipart/form-data; boundary=Xyz123"})
+    saved = next((tmp_path / "data").glob("health_*.csv")).read_bytes()
+    assert saved == b"Date/Time,Step Count (count)\r\n2026-04-01 00:00:00,5"

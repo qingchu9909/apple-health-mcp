@@ -74,3 +74,28 @@ def test_get_metric_caps_rows(tmp_data_dir: Path):
     server = _import_server(tmp_data_dir)
     out = server.get_metric("Step Count (count)", days=2)
     assert out.startswith("(showing the last 500 of 600 rows")
+
+
+def test_imperial_and_kcal_columns_are_converted(tmp_data_dir: Path):
+    (tmp_data_dir / "health_units.csv").write_text(
+        "Date/Time,Active Energy (kcal),Walking + Running Distance (mi),Walking Speed (mi/hr),"
+        "Apple Sleeping Wrist Temperature (degF),Blood Glucose (mg/dL)\n"
+        "2026-04-01 00:00:00,100,2,3,98.6,90.08\n"
+    )
+    server = _import_server(tmp_data_dir)
+    row = server.load_all_csv().iloc[0]
+
+    assert round(row["Active Energy (kJ)"], 1) == 418.4
+    assert round(row["Walking + Running Distance (km)"], 3) == 3.219
+    assert round(row["Walking Speed (km/hr)"], 3) == 4.828
+    assert round(row["Apple Sleeping Wrist Temperature (degC)"], 2) == 37.0
+    assert round(row["Blood Glucose (mmol/L)"], 2) == 5.0
+    assert "Active Energy (kcal)" not in row.index
+
+
+def test_unit_switch_between_exports_keeps_one_series(tmp_data_dir: Path):
+    (tmp_data_dir / "health_1.csv").write_text("Date/Time,Active Energy (kJ)\n2026-04-01 00:00:00,1000\n")
+    (tmp_data_dir / "health_2.csv").write_text("Date/Time,Active Energy (kcal)\n2026-04-02 00:00:00,100\n")
+    server = _import_server(tmp_data_dir)
+    df = server.load_all_csv()
+    assert list(df["Active Energy (kJ)"].round(1)) == [1000.0, 418.4]
