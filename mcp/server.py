@@ -543,7 +543,14 @@ def get_baselines(days: int = 30) -> str:
     if df.empty:
         return json.dumps({"baselines": [], "days_requested": days}, indent=2)
 
-    per_day = [(key, _daily_series(df, col, agg)) for key, col, agg in _BASELINE_AGGS]
+    # Today's totals (steps, energy) are still filling up; comparing them with
+    # full days would always read as a drop.
+    today = _today()
+    per_day = [
+        (key, series[series.index != today] if agg == "sum" else series)
+        for key, col, agg in _BASELINE_AGGS
+        for series in [_daily_series(df, col, agg)]
+    ]
     per_day.append(("glucose_night_mean_mmol", _glucose_night_frame(df)["glucose_night_mean_mmol"]))
 
     baselines = []
@@ -869,6 +876,29 @@ def _freshness() -> dict:
     }
 
 
+# Columns already summarised by the structured tools above.
+_STRUCTURED_COLUMNS = {
+    col for aggs in (_SLEEP_AGGS, _FITNESS_AGGS, _VITALS_AGGS, _BASELINE_AGGS) for _, col, _ in aggs
+} | {_GLUCOSE_COL}
+
+
+def other_metrics(days: int = 7) -> dict:
+    """Daily values of every other exported metric that has data in the window.
+
+    Health Auto Export CSV rows are already daily aggregates, so this is the
+    exported value per day (the mean if a day has several rows).
+    """
+    df = _filter_recent(load_all_csv(), days)
+    result = {}
+    for col in df.columns:
+        if col == "Date/Time" or col in _STRUCTURED_COLUMNS or not pd.api.types.is_numeric_dtype(df[col]):
+            continue
+        daily = _daily_series(df, col, "mean")
+        if not daily.empty:
+            result[col] = {str(day): _round_or_none(value) for day, value in daily.sort_index().items()}
+    return result
+
+
 def build_bundle(days: int = 14) -> dict:
     """All inputs for the morning briefing in one JSON document."""
     days = max(1, min(days, 90))
@@ -884,6 +914,7 @@ def build_bundle(days: int = 14) -> dict:
         "daily_vitals": json.loads(get_daily_vitals(days=days)),
         "daily_fitness": json.loads(get_daily_fitness(days=days)),
         "workouts": json.loads(get_workouts(days=days)),
+        "other_metrics": other_metrics(days=min(days, 7)),
         "report_7_days_ago": previous if previous.get("date") else None,
     }
 
@@ -895,7 +926,10 @@ def publish_report(content, title: str | None = None, date: str | None = None, p
         return saved
     result = {"saved": saved}
     if push:
-        sent = notify.send_all(title or f"Health report {saved['date']}", content)
+        try:
+            sent = notify.send_all(title or f"Health report {saved['date']}", content)
+        except Exception as exc:  # the report is saved either way
+            sent = {"error": f"{type(exc).__name__}: {exc}"[:300]}
         result["push"] = sent or {"error": "no push channel configured on the server"}
     return result
 

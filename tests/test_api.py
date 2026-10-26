@@ -46,7 +46,8 @@ def test_bundle_contains_every_section(tmp_data_dir: Path, monkeypatch):
     response = client.get("/api/bundle?days=10000", headers={"Authorization": f"Bearer {API_TOKEN}"})
     assert response.status_code == 200
     bundle = response.json()
-    for key in ("today", "freshness", "baselines", "daily_sleep", "daily_vitals", "daily_fitness", "workouts"):
+    for key in ("today", "freshness", "baselines", "daily_sleep", "daily_vitals", "daily_fitness", "workouts",
+                "other_metrics"):
         assert key in bundle
     # days is clamped to 90, which still covers nothing from the fixed 2026-04 fixture
     # unless today is close to it; the structure is what matters here.
@@ -106,3 +107,19 @@ def test_mcp_path_token_can_differ_from_ingest_token(tmp_data_dir: Path, monkeyp
     server = _import_server(tmp_data_dir)
     assert server.MCP_PATH_TOKEN == "m" * 64
     assert server.mcp.settings.streamable_http_path == f"/mcp/{'m' * 64}"
+
+
+def test_push_crash_still_returns_the_saved_report(tmp_data_dir: Path, monkeypatch):
+    server = _server(tmp_data_dir, monkeypatch)
+
+    def boom(title, body):
+        raise PermissionError("cannot read CA bundle")
+
+    monkeypatch.setattr(server.notify, "send_all", boom)
+    response = _client(server).post(
+        "/api/report", json={"content": "# 日报"}, headers={"Authorization": f"Bearer {API_TOKEN}"}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["saved"]["bytes"] > 0
+    assert "PermissionError" in body["push"]["error"]

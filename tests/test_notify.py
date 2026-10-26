@@ -113,3 +113,11 @@ def test_network_errors_do_not_raise(monkeypatch):
 
     result = notify.send_all("t", "b", client=_client(handler))
     assert result["pushplus"].startswith("failed: ConnectError")
+
+
+def test_no_client_is_created_without_channels(monkeypatch):
+    def fail(*args, **kwargs):
+        raise AssertionError("no HTTP client should be created")
+
+    monkeypatch.setattr(notify.httpx, "Client", fail)
+    assert notify.send_all("t", "b") == {}

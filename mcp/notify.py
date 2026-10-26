@@ -133,11 +133,14 @@ _SENDERS = {"telegram": send_telegram, "serverchan": send_serverchan, "pushplus"
 
 def send_all(title: str, body: str, client: httpx.Client | None = None) -> dict[str, str]:
     """Send ``body`` to every configured channel; returns ``{channel: status}``."""
+    channels = configured_channels()
+    if not channels:
+        return {}
     own_client = client is None
     client = client or httpx.Client(timeout=_TIMEOUT)
     results: dict[str, str] = {}
     try:
-        for channel in configured_channels():
+        for channel in channels:
             try:
                 results[channel] = _SENDERS[channel](client, title, body)
             except (httpx.HTTPError, ValueError) as exc:
