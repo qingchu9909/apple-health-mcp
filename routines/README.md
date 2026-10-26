@@ -6,6 +6,13 @@ persists it to `/opt/health/reports/` via the `save_health_report` MCP
 tool. The Fitness Coach Agent on the user's phone reads the latest report
 through `get_health_report`.
 
+For a report that is pushed to your phone (Telegram / WeChat) and does not
+depend on the connector being attached to the routine, use
+[`daily-report.zh.prompt.md`](./daily-report.zh.prompt.md) instead: it reads
+`GET /api/bundle` and submits `POST /api/report` over HTTPS with
+`HEALTH_API_BASE` / `HEALTH_API_TOKEN` from the routine's cloud environment.
+Setup steps are in [`docs/SETUP.zh.md`](../docs/SETUP.zh.md).
+
 The routine itself is **not infra-as-code** — Anthropic Routines are
 created interactively. We commit the prompt source so the routine is
 reproducible.

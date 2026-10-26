@@ -21,12 +21,21 @@ Once deployed, Claude can answer questions like *"how did my HRV trend last
 week?"* or *"summarize my sleep over the past 14 days"* against your real
 Apple Health data — without uploading anything to a third-party service.
 
+> **About this fork.** It adds a one-command installer (`deploy/install.sh`,
+> one domain, Caddy or Nginx, systemd), workouts, push notifications
+> (Telegram, Server酱, PushPlus), an HTTPS API that Claude's scheduled cloud
+> routines can use for a daily report, time-zone handling, separate tokens
+> for upload / connector / report API, and fixes for duplicate exports and
+> unauthenticated uploads. Chinese setup guide: [docs/SETUP.zh.md](docs/SETUP.zh.md);
+> Chinese daily-report routine: [routines/daily-report.zh.prompt.md](routines/daily-report.zh.prompt.md).
+
 ---
 
 ## Features
 
-Twelve MCP tools — four return compact JSON daily records, two read/write a
-persisted daily HEALTH REPORT, and six raw tools remain as the escape hatch.
+Fifteen MCP tools — four return compact JSON daily records, two cover
+workouts, two read/write a persisted daily HEALTH REPORT, one pushes a
+message to your phone, and six raw tools remain as the escape hatch.
 
 **Structured (one record per day per domain, JSON):**
 
@@ -36,6 +45,19 @@ persisted daily HEALTH REPORT, and six raw tools remain as the escape hatch.
 | `get_daily_fitness` | Steps, distance, energy, exercise/stand time, flights, walking speed, walking HR, VO2 max — aggregated per day. | 14 days |
 | `get_daily_vitals` | Heart-rate min/max/avg, resting HR, HRV, respiratory rate, blood-oxygen — aggregated per day — plus an overnight CGM glucose profile (mean/min/max, % time in 3.9–7.8 mmol/L, sample count over 22:00–08:00, keyed to the wake date). | 14 days |
 | `get_baselines` | p10/p50/p90 + yesterday + 7d-vs-30d trend for every headline metric. | 30 days |
+
+**Workouts** (from a second Health Auto Export automation, JSON v2):
+
+| Tool | Description | Default window |
+| --- | --- | --- |
+| `get_workouts` | One compact record per workout: type, start/end, duration, distance, energy, heart rate, elevation, conditions. | 14 days |
+| `get_workout_detail` | Minute-by-minute heart rate, heart-rate recovery, steps and metadata for one workout. | n/a |
+
+**Push:**
+
+| Tool | Description |
+| --- | --- |
+| `send_message` | Sends a message to every configured channel (Telegram, Server酱, PushPlus). |
 
 **Daily HEALTH REPORT (read/write):**
 
@@ -61,6 +83,15 @@ scheduled remote agent that calls `save_health_report` every morning.
 The CSV exports are daily aggregates with 100+ columns, so any of those
 columns can be queried via `get_metric` even if no dedicated tool wraps them.
 
+**HTTP API for scheduled routines.** Claude's scheduled cloud routines cannot
+attach a custom connector, so the MCP server also exposes two plain HTTPS
+routes, guarded by `Authorization: Bearer $REPORT_API_TOKEN`:
+
+| Route | Description |
+| --- | --- |
+| `GET /api/bundle?days=14` | Everything a morning briefing needs in one JSON document: freshness, baselines, daily sleep / vitals / fitness, workouts, other metrics, last week's report. |
+| `POST /api/report` | `{"content", "title"?, "date"?, "push"?}` — saves the report like `save_health_report` and pushes it to the configured channels. |
+
 ---
 
 ## Repository layout
@@ -69,17 +100,22 @@ columns can be queried via `get_metric` even if no dedicated tool wraps them.
 apple-health-mcp/
 ├── ingest/main.py             FastAPI ingest service (port 8001)
 ├── mcp/server.py              FastMCP MCP server     (port 8002)
+├── mcp/notify.py              Telegram / Server酱 / PushPlus delivery
 ├── requirements.txt           Pinned Python dependencies
-├── .env.example               Template for the shared secret + data + reports paths
+├── .env.example               Tokens, paths, time zone and push channels
 ├── deploy/
-│   ├── nginx/
-│   │   ├── ingest.example.conf   Reverse-proxy template for /ingest
-│   │   └── mcp.example.conf      Reverse-proxy template for /mcp/<token>
-│   └── supervisor/
-│       ├── health-ingest.conf    process supervisor unit
-│       └── health-mcp.conf       process supervisor unit
+│   ├── install.sh             One-command installer (Debian/Ubuntu, run as root)
+│   ├── update.sh              Pull the latest code and re-run the installer
+│   ├── show-config.sh         Print the values for the phone, connector and routine
+│   ├── systemd/               Units used by install.sh
+│   ├── caddy/Caddyfile.example                 Single-domain Caddy site
+│   ├── nginx/health.single-domain.example.conf Single-domain Nginx site
+│   ├── nginx/{ingest,mcp}.example.conf         Original two-subdomain templates
+│   └── supervisor/            Original process supervisor units
+├── docs/SETUP.zh.md           Chinese step-by-step setup guide
 ├── routines/
-│   ├── health-report.prompt.md   Prompt source for the daily-report routine
+│   ├── health-report.prompt.md   Prompt source for the daily-report routine (MCP)
+│   ├── daily-report.zh.prompt.md Chinese routine prompt using the HTTPS API
 │   └── README.md                 How to schedule the routine via /schedule
 └── tests/
     ├── test_loader.py
@@ -109,6 +145,22 @@ on disk just mirrors the directories above.
 ---
 
 ## Quick start
+
+On a Debian or Ubuntu VPS, as root, with a domain whose A record points at it:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/<you>/apple-health-mcp/main/deploy/install.sh \
+  | DOMAIN=health.example.com USER_TZ=Europe/London TELEGRAM_BOT_TOKEN=123:abc bash
+```
+
+It installs everything under `/opt/health`, configures HTTPS (Caddy when ports
+80/443 are free, otherwise an existing Caddy or Nginx), checks every endpoint,
+and sends the values to enter on the phone and in Claude to your push channel.
+Re-running it is safe; `deploy/update.sh` updates. Settings are documented at
+the top of the script; the steps on the phone and in Claude are in
+[docs/SETUP.zh.md](docs/SETUP.zh.md).
+
+## Manual install (reference)
 
 The reference deployment uses Ubuntu 22.04 with [aaPanel] for Nginx + Supervisor.
 Adapt freely if you prefer plain `systemd` and hand-rolled Nginx.
@@ -208,10 +260,14 @@ Open the app, go to **Automations**, and add a REST API automation:
 | HTTP method | `POST` |
 | Authorization header | `Bearer <your token>` |
 | Format | `CSV` |
-| Date range | `Since Last Sync` |
-| Sync cadence | `1 day` |
+| Date range | `Default` (yesterday in full plus today so far; overlapping uploads are merged, newest value wins) |
+| Sync cadence | `1 hour` |
 | Health metrics | `All Selected` |
 | Summarize Data | `ON` |
+
+Add a second automation with the same URL and header for **Workouts**:
+format `JSON`, export version `2`, *Include Workout Metrics* on, *Include
+Route Data* off, time grouping `Minutes`, date range `Default`.
 
 Tap **Run Now** once to push your historical data. The first run can be a few
 MB and may take a few seconds.
@@ -223,7 +279,7 @@ In Claude (web or iOS): **Settings → Connectors → Add custom connector**
 | Field | Value |
 | --- | --- |
 | Name | `Apple Health MCP` |
-| URL | `https://mcp.example.com/mcp/<your token>` |
+| URL | `https://mcp.example.com/mcp/<MCP_PATH_TOKEN>` (falls back to `HEALTH_TOKEN` when unset) |
 | Authentication | None *(token is in the URL path)* |
 | Transport | Streamable HTTP |
 
