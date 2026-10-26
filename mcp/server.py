@@ -4,28 +4,64 @@ Exposes Apple Health data (CSV exports written by the ingest service) to any
 MCP client over Streamable HTTP. The bearer token is embedded in the URL path
 because Claude's connector UI does not currently support custom auth headers.
 """
+import hmac
 import io
 import json
 import os
 import pathlib
 import re
+import threading
+from datetime import date as date_cls
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
+import notify
 import pandas as pd
 import uvicorn
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
+from starlette.concurrency import run_in_threadpool
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 load_dotenv(os.environ.get("DOTENV_PATH", "/opt/health/.env"))
 TOKEN = os.getenv("HEALTH_TOKEN")
+# The connector URL secret can differ from the phone's ingest token, so a
+# leaked connector URL cannot be used to push fake data (and vice versa).
+MCP_PATH_TOKEN = os.getenv("MCP_PATH_TOKEN") or TOKEN
+# Bearer token for the /api/* routes used by the daily-report routine.
+# Unset = those routes answer 503.
+REPORT_API_TOKEN = os.getenv("REPORT_API_TOKEN", "")
 DATA_DIR = pathlib.Path(os.getenv("DATA_DIR", "/opt/health/data"))
 REPORTS_DIR = pathlib.Path(os.getenv("REPORTS_DIR", "/opt/health/reports"))
+WORKOUTS_DIR = pathlib.Path(os.getenv("WORKOUTS_DIR", "/opt/health/workouts"))
+# Health Auto Export writes CSV timestamps in the phone's local time. Set
+# USER_TZ (e.g. Asia/Shanghai) when the VPS runs in a different zone so that
+# "today", "last N days" and report dates follow the user, not the server.
+USER_TZ = ZoneInfo(os.environ["USER_TZ"]) if os.getenv("USER_TZ") else None
+
+_MIN_TOKEN_LEN = 32
+for _name, _value in (("HEALTH_TOKEN", TOKEN), ("MCP_PATH_TOKEN", MCP_PATH_TOKEN)):
+    if not _value or len(_value) < _MIN_TOKEN_LEN:
+        raise SystemExit(f"{_name} must be at least {_MIN_TOKEN_LEN} characters (openssl rand -hex 32)")
 
 _MAX_REPORT_BYTES = 200_000
 _REPORT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_MAX_METRIC_ROWS = 500
 
 mcp = FastMCP("apple-health", stateless_http=True)
 mcp.settings.transport_security.enable_dns_rebinding_protection = False
+
+
+def _now() -> datetime:
+    """Naive wall-clock time in the user's zone, comparable with CSV timestamps."""
+    if USER_TZ is None:
+        return datetime.now()
+    return datetime.now(USER_TZ).replace(tzinfo=None)
+
+
+def _today() -> date_cls:
+    return _now().date()
 
 
 def _dir_signature() -> tuple:
@@ -42,6 +78,10 @@ def _dir_signature() -> tuple:
 
 
 _cache: tuple[tuple, pd.DataFrame] | None = None
+_load_lock = threading.Lock()
+# Health Auto Export uploads every hour or so. Past this many files the loader
+# folds them into one, so a cache miss never has to re-read thousands.
+_COMPACT_AFTER = 48
 
 
 def _read_csv_tolerant(path: pathlib.Path) -> pd.DataFrame:
@@ -64,35 +104,106 @@ def _read_csv_tolerant(path: pathlib.Path) -> pd.DataFrame:
             if cut != -1:
                 tail = tail[:cut]
             raw = tail.strip()
-    return pd.read_csv(io.BytesIO(raw), parse_dates=["Date/Time"])
+    df = pd.read_csv(io.BytesIO(raw), parse_dates=["Date/Time"])
+    df["Date/Time"] = _naive_local(df["Date/Time"])
+    return df
+
+
+def _naive_local(series: pd.Series) -> pd.Series:
+    """Coerce timestamps to naive local time in the user's zone.
+
+    Health Auto Export writes naive local timestamps, which pass through
+    unchanged. Offset-bearing values (``2026-04-01 09:00:00 +0800``) are
+    converted, so every row compares cleanly against ``_now()``.
+    """
+    if not pd.api.types.is_datetime64_any_dtype(series):
+        try:
+            series = pd.to_datetime(series, errors="coerce")
+        except (TypeError, ValueError):
+            # Mixed UTC offsets (e.g. across a DST change) need utc=True.
+            series = pd.to_datetime(series, utc=True, errors="coerce")
+    if series.dt.tz is None:
+        return series
+    return series.dt.tz_convert(USER_TZ or datetime.now().astimezone().tzinfo).dt.tz_localize(None)
+
+
+def _merge_exports(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    # Frames are ordered oldest first, so for a timestamp that appears in
+    # several exports (a day that was still filling up at the previous sync,
+    # or two automations covering different metrics) ``last()`` keeps the
+    # newest non-null value of every column instead of dropping whole rows.
+    return (
+        pd.concat(frames, ignore_index=True)
+        .groupby("Date/Time", sort=True)
+        .last()
+        .reset_index()
+    )
+
+
+def _compact(files: list[pathlib.Path]) -> None:
+    """Fold ``files`` (sorted oldest first) into a single merged export.
+
+    The result is written next to the newest input as ``<name>_merged.csv``,
+    which sorts right after it, so later uploads still win. Raw uploads move
+    to ``DATA_DIR/archive`` (kept for recovery, never read) and earlier merged
+    files are deleted. A crash part-way leaves older duplicates behind, which
+    the newest-wins merge already tolerates.
+    """
+    frames, inputs, unreadable = [], [], []
+    for f in files:
+        try:
+            frames.append(_read_csv_tolerant(f))
+            inputs.append(f)
+        except Exception as e:
+            print(f"[compact] archiving unreadable {f.name}: {e}", flush=True)
+            unreadable.append(f)
+    if len(inputs) < 2:
+        return
+    newest = inputs[-1]
+    target = newest.with_name(f"{newest.stem.removesuffix('_merged')}_merged.csv")
+    tmp = target.with_name(f".{target.name}.tmp")
+    try:
+        _merge_exports(frames).to_csv(tmp, index=False, date_format="%Y-%m-%d %H:%M:%S")
+        # Keep the newest upload's mtime so the "last upload" freshness check
+        # still notices when the phone stops syncing.
+        mtime_ns = newest.stat().st_mtime_ns
+        os.utime(tmp, ns=(mtime_ns, mtime_ns))
+        os.replace(tmp, target)
+    finally:
+        tmp.unlink(missing_ok=True)
+    archive = DATA_DIR / "archive"
+    archive.mkdir(exist_ok=True)
+    for f in inputs + unreadable:
+        if f == target:
+            continue
+        if f.stem.endswith("_merged"):
+            f.unlink(missing_ok=True)
+        else:
+            f.rename(archive / f.name)
 
 
 def load_all_csv() -> pd.DataFrame:
     global _cache
-    sig = _dir_signature()
-    if _cache is not None and _cache[0] == sig:
-        return _cache[1]
-    if not sig:
-        _cache = (sig, pd.DataFrame())
-        return _cache[1]
-    dfs = []
-    for name, _mtime, _size in sig:
-        f = DATA_DIR / name
-        try:
-            dfs.append(_read_csv_tolerant(f))
-        except Exception as e:
-            print(f"[load_all_csv] skipping {f.name}: {e}", flush=True)
-    if not dfs:
-        _cache = (sig, pd.DataFrame())
-        return _cache[1]
-    df = (
-        pd.concat(dfs)
-        .drop_duplicates(subset=["Date/Time"])
-        .sort_values("Date/Time")
-        .reset_index(drop=True)
-    )
-    _cache = (sig, df)
-    return df
+    with _load_lock:
+        files = sorted(DATA_DIR.glob("health_*.csv"))
+        if len(files) > _COMPACT_AFTER:
+            try:
+                _compact(files)
+            except Exception as e:
+                print(f"[compact] failed, reading the files as they are: {e}", flush=True)
+        sig = _dir_signature()
+        if _cache is not None and _cache[0] == sig:
+            return _cache[1]
+        dfs = []
+        for name, _mtime, _size in sig:
+            f = DATA_DIR / name
+            try:
+                dfs.append(_read_csv_tolerant(f))
+            except Exception as e:
+                print(f"[load_all_csv] skipping {f.name}: {e}", flush=True)
+        df = _merge_exports(dfs) if dfs else pd.DataFrame()
+        _cache = (sig, df)
+        return df
 
 
 # --- Daily-aggregation helpers used by the structured tools below -----------
@@ -174,7 +285,7 @@ def _round_or_none(value, ndigits: int = 2):
 def _filter_recent(df: pd.DataFrame, days: int) -> pd.DataFrame:
     if df.empty:
         return df
-    cutoff = datetime.now() - timedelta(days=days)
+    cutoff = _now() - timedelta(days=days)
     return df[df["Date/Time"] >= cutoff]
 
 
@@ -286,14 +397,20 @@ def get_latest() -> str:
 
 @mcp.tool()
 def get_metric(metric: str, days: int = 30) -> str:
-    """Get a specific health metric over a date range."""
+    """Get a specific health metric over a date range.
+
+    Returns at most the 500 most recent rows; narrow ``days`` for older data.
+    """
     df = load_all_csv()
     if df.empty:
         return "No health data available yet."
     if metric not in df.columns:
         return f"Metric '{metric}' not found. Use list_metrics first."
-    cutoff = datetime.now() - timedelta(days=days)
+    cutoff = _now() - timedelta(days=days)
     filtered = df[df["Date/Time"] >= cutoff][["Date/Time", metric]].dropna()
+    if len(filtered) > _MAX_METRIC_ROWS:
+        note = f"(showing the last {_MAX_METRIC_ROWS} of {len(filtered)} rows; narrow `days` for more)\n"
+        return note + filtered.tail(_MAX_METRIC_ROWS).to_string(index=False)
     return filtered.to_string(index=False)
 
 
@@ -303,7 +420,7 @@ def get_summary(days: int = 7) -> str:
     df = load_all_csv()
     if df.empty:
         return "No health data available yet."
-    cutoff = datetime.now() - timedelta(days=days)
+    cutoff = _now() - timedelta(days=days)
     recent = df[df["Date/Time"] >= cutoff]
     summary_cols = [
         "Step Count (count)", "Heart Rate [Avg] (count/min)", "Heart Rate Variability (ms)",
@@ -330,7 +447,7 @@ def get_sleep(days: int = 14) -> str:
     df = load_all_csv()
     if df.empty:
         return "No health data available yet."
-    cutoff = datetime.now() - timedelta(days=days)
+    cutoff = _now() - timedelta(days=days)
     sleep_cols = [c for c in df.columns if "Sleep" in c or "Wrist Temperature" in c]
     recent = df[df["Date/Time"] >= cutoff][["Date/Time"] + sleep_cols].dropna(
         subset=sleep_cols, how="all"
@@ -344,7 +461,7 @@ def get_fitness(days: int = 14) -> str:
     df = load_all_csv()
     if df.empty:
         return "No health data available yet."
-    cutoff = datetime.now() - timedelta(days=days)
+    cutoff = _now() - timedelta(days=days)
     fitness_cols = [
         "Step Count (count)", "Heart Rate [Min] (count/min)", "Heart Rate [Max] (count/min)",
         "Heart Rate [Avg] (count/min)", "Heart Rate Variability (ms)",
@@ -470,7 +587,7 @@ def get_baselines(days: int = 30) -> str:
 def _resolve_report_date(date: str | None) -> str:
     """Validate and normalise a YYYY-MM-DD report date, defaulting to today."""
     if date is None:
-        return datetime.now().date().isoformat()
+        return _today().isoformat()
     if not _REPORT_DATE_RE.match(date):
         raise ValueError(f"invalid date: {date!r}; expected YYYY-MM-DD")
     # Strict parse — rejects e.g. 2026-13-01.
@@ -530,14 +647,15 @@ def get_health_report(date: str | None = None, max_age_days: int = 7) -> str:
         target = REPORTS_DIR / f"{resolved}.md"
         if target.exists():
             return json.dumps(
-                {"date": resolved, "content": target.read_text(encoding="utf-8")}
+                {"date": resolved, "content": target.read_text(encoding="utf-8")},
+                ensure_ascii=False,
             )
         return json.dumps({"date": None, "note": f"No report for {resolved}."})
 
     if not REPORTS_DIR.exists():
         return json.dumps({"date": None, "note": "Reports directory does not exist yet."})
 
-    today = datetime.now().date()
+    today = _today()
     cutoff = today - timedelta(days=max_age_days)
     candidates: list[tuple] = []
     for path in REPORTS_DIR.glob("*.md"):
@@ -557,11 +675,282 @@ def get_health_report(date: str | None = None, max_age_days: int = 7) -> str:
     candidates.sort()
     latest_day, latest_path = candidates[-1]
     return json.dumps(
-        {"date": latest_day.isoformat(), "content": latest_path.read_text(encoding="utf-8")}
+        {"date": latest_day.isoformat(), "content": latest_path.read_text(encoding="utf-8")},
+        ensure_ascii=False,
     )
 
 
-mcp.settings.streamable_http_path = f"/mcp/{TOKEN}"
+# --- Workouts ----------------------------------------------------------------
+#
+# The ingest service stores each workout from a Health Auto Export "Workouts"
+# automation (JSON, export version 2) as WORKOUTS_DIR/<id>.json.
+
+_WORKOUT_TIME_FORMAT = "%Y-%m-%d %H:%M:%S %z"
+
+
+def _parse_workout_time(value) -> datetime | None:
+    """Parse ``yyyy-MM-dd HH:mm:ss Z`` into naive local time in the user's zone."""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.strptime(value.strip(), _WORKOUT_TIME_FORMAT)
+    except ValueError:
+        try:
+            parsed = datetime.fromisoformat(value.strip())
+        except ValueError:
+            return None
+    if parsed.tzinfo is None:
+        return parsed
+    return parsed.astimezone(USER_TZ).replace(tzinfo=None)
+
+
+def _quantity(value) -> dict | None:
+    """``{"qty": 5.2, "units": "km"}`` -> ``{"value": 5.2, "unit": "km"}``."""
+    if isinstance(value, dict) and isinstance(value.get("qty"), int | float):
+        return {"value": round(float(value["qty"]), 2), "unit": value.get("units")}
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return {"value": round(float(value), 2), "unit": None}
+    return None
+
+
+_workout_cache: tuple[tuple, list] | None = None
+
+
+def _load_workouts() -> list[tuple[datetime, dict]]:
+    global _workout_cache
+    if not WORKOUTS_DIR.exists():
+        return []
+    paths = sorted(WORKOUTS_DIR.glob("*.json"))
+    sig = tuple((p.name, p.stat().st_mtime_ns, p.stat().st_size) for p in paths)
+    if _workout_cache is not None and _workout_cache[0] == sig:
+        return _workout_cache[1]
+    items = []
+    for path in paths:
+        try:
+            workout = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            print(f"[load_workouts] skipping {path.name}: {exc}", flush=True)
+            continue
+        start = _parse_workout_time(workout.get("start"))
+        if start is not None:
+            items.append((start, workout))
+    items.sort(key=lambda item: item[0])
+    _workout_cache = (sig, items)
+    return items
+
+
+def _workout_summary(start: datetime, workout: dict) -> dict:
+    end = _parse_workout_time(workout.get("end"))
+    duration_s = workout.get("duration")
+    if not isinstance(duration_s, int | float) and end is not None:
+        duration_s = (end - start).total_seconds()
+    heart_rate = workout.get("heartRate") if isinstance(workout.get("heartRate"), dict) else {}
+    summary = {
+        "id": workout.get("id"),
+        "name": workout.get("name"),
+        "date": start.date().isoformat(),
+        "start": start.strftime("%Y-%m-%d %H:%M"),
+        "end": end.strftime("%Y-%m-%d %H:%M") if end else None,
+        "duration_min": round(duration_s / 60, 1) if isinstance(duration_s, int | float) else None,
+        "location": workout.get("location"),
+        "active_energy": _quantity(workout.get("activeEnergyBurned")),
+        "total_energy": _quantity(workout.get("totalEnergy")),
+        "distance": _quantity(workout.get("distance")),
+        "elevation_up": _quantity(workout.get("elevationUp")),
+        "hr_avg": _quantity(heart_rate.get("avg")) or _quantity(workout.get("avgHeartRate")),
+        "hr_max": _quantity(heart_rate.get("max")) or _quantity(workout.get("maxHeartRate")),
+        "hr_min": _quantity(heart_rate.get("min")),
+        "intensity": _quantity(workout.get("intensity")),
+        "temperature": _quantity(workout.get("temperature")),
+        "humidity": _quantity(workout.get("humidity")),
+    }
+    return {key: value for key, value in summary.items() if value is not None}
+
+
+@mcp.tool()
+def get_workouts(days: int = 14) -> str:
+    """Workouts from the last N days, oldest first, one compact record each.
+
+    Each record has ``id``, ``name`` (workout type), ``start``/``end``,
+    ``duration_min``, and when recorded: ``distance``, ``active_energy``,
+    ``total_energy``, ``elevation_up``, ``hr_avg``/``hr_max``/``hr_min``,
+    ``intensity`` (MET), ``temperature``, ``humidity`` — each as
+    ``{"value", "unit"}``. Use ``get_workout_detail`` for the minute-by-minute
+    heart rate of one workout.
+    """
+    cutoff = _now() - timedelta(days=days)
+    records = [_workout_summary(start, w) for start, w in _load_workouts() if start >= cutoff]
+    return json.dumps(
+        {"records": records, "days_requested": days, "days_returned": len(records)},
+        indent=2,
+        ensure_ascii=False,
+    )
+
+
+def _series(entries, fields: tuple[str, ...]) -> list[dict]:
+    rows = []
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        when = _parse_workout_time(entry.get("date"))
+        row = {"time": when.strftime("%H:%M") if when else entry.get("date")}
+        for field in fields:
+            if isinstance(entry.get(field), int | float):
+                row[field.lower()] = round(float(entry[field]), 1)
+        rows.append(row)
+    return rows
+
+
+@mcp.tool()
+def get_workout_detail(workout_id: str) -> str:
+    """Full detail for one workout (``id`` from ``get_workouts``).
+
+    Adds the minute-by-minute heart rate (``heart_rate``: time, min/avg/max),
+    heart-rate recovery after the workout, total steps, and the workout's
+    metadata as exported by Health Auto Export.
+    """
+    for start, workout in _load_workouts():
+        if workout.get("id") != workout_id:
+            continue
+        detail = _workout_summary(start, workout)
+        detail["heart_rate"] = _series(workout.get("heartRateData"), ("Min", "Avg", "Max"))
+        detail["heart_rate_recovery"] = _series(workout.get("heartRateRecovery"), ("Min", "Avg", "Max"))
+        steps = [e.get("qty") for e in workout.get("stepCount") or [] if isinstance(e, dict)]
+        if steps:
+            detail["steps"] = int(sum(q for q in steps if isinstance(q, int | float)))
+        if workout.get("metadata"):
+            detail["metadata"] = workout["metadata"]
+        return json.dumps(detail, indent=2, ensure_ascii=False, default=str)
+    return json.dumps({"error": f"workout {workout_id!r} not found; use get_workouts first"})
+
+
+# --- Notifications -------------------------------------------------------------
+
+
+@mcp.tool()
+async def send_message(text: str, title: str = "") -> str:
+    """Push a message to the user's phone via Telegram and/or WeChat.
+
+    Only call this when the user asks to send or push something. ``text`` may
+    use simple Markdown (headings, **bold**, bullets). Returns the delivery
+    status per configured channel.
+    """
+    if not text.strip():
+        return json.dumps({"error": "text must be a non-empty string"})
+    if not notify.configured_channels():
+        return json.dumps({"error": "no push channel configured on the server"})
+    results = await run_in_threadpool(notify.send_all, title, text)
+    return json.dumps(results, ensure_ascii=False)
+
+
+# --- HTTP API for the scheduled report routine --------------------------------
+#
+# Scheduled cloud routines cannot reliably attach a custom MCP connector, so
+# the daily-report routine reads the same data over plain HTTPS instead:
+#   GET  /api/bundle?days=14   everything a morning briefing needs, one call
+#   POST /api/report           {"content", "title"?, "date"?, "push"?}
+# Both require ``Authorization: Bearer $REPORT_API_TOKEN``.
+
+
+def _freshness() -> dict:
+    files = sorted(DATA_DIR.glob("health_*.csv"), key=lambda f: f.stat().st_mtime)
+    df = load_all_csv()
+    workouts = _load_workouts()
+    tz = USER_TZ or datetime.now().astimezone().tzinfo
+    last_upload = (
+        datetime.fromtimestamp(files[-1].stat().st_mtime, tz).strftime("%Y-%m-%d %H:%M")
+        if files
+        else None
+    )
+    return {
+        "last_upload": last_upload,
+        "latest_metric_row": str(df["Date/Time"].max()) if not df.empty else None,
+        "latest_workout_start": workouts[-1][0].strftime("%Y-%m-%d %H:%M") if workouts else None,
+    }
+
+
+def build_bundle(days: int = 14) -> dict:
+    """All inputs for the morning briefing in one JSON document."""
+    days = max(1, min(days, 90))
+    week_ago = (_today() - timedelta(days=7)).isoformat()
+    previous = json.loads(get_health_report(date=week_ago))
+    return {
+        "generated_at": _now().strftime("%Y-%m-%d %H:%M"),
+        "timezone": str(USER_TZ) if USER_TZ else "server local time",
+        "today": _today().isoformat(),
+        "freshness": _freshness(),
+        "baselines": json.loads(get_baselines(days=30)),
+        "daily_sleep": json.loads(get_daily_sleep(days=days)),
+        "daily_vitals": json.loads(get_daily_vitals(days=days)),
+        "daily_fitness": json.loads(get_daily_fitness(days=days)),
+        "workouts": json.loads(get_workouts(days=days)),
+        "report_7_days_ago": previous if previous.get("date") else None,
+    }
+
+
+def publish_report(content, title: str | None = None, date: str | None = None, push: bool = True) -> dict:
+    """Save the report, then push it to every configured channel."""
+    saved = json.loads(save_health_report(content=content, date=date))
+    if "error" in saved:
+        return saved
+    result = {"saved": saved}
+    if push:
+        sent = notify.send_all(title or f"Health report {saved['date']}", content)
+        result["push"] = sent or {"error": "no push channel configured on the server"}
+    return result
+
+
+def _bearer_ok(request: Request) -> bool:
+    expected = f"Bearer {REPORT_API_TOKEN}".encode()
+    supplied = request.headers.get("authorization", "").encode()
+    return hmac.compare_digest(supplied, expected)
+
+
+def _api_guard(request: Request) -> JSONResponse | None:
+    if len(REPORT_API_TOKEN) < _MIN_TOKEN_LEN:
+        return JSONResponse({"error": "REPORT_API_TOKEN is not configured"}, status_code=503)
+    if not _bearer_ok(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    return None
+
+
+@mcp.custom_route("/api/bundle", methods=["GET"])
+async def api_bundle(request: Request) -> JSONResponse:
+    if (denied := _api_guard(request)) is not None:
+        return denied
+    try:
+        days = int(request.query_params.get("days", "14"))
+    except ValueError:
+        return JSONResponse({"error": "days must be an integer"}, status_code=400)
+    return JSONResponse(await run_in_threadpool(build_bundle, days))
+
+
+@mcp.custom_route("/api/report", methods=["POST"])
+async def api_report(request: Request) -> JSONResponse:
+    if (denied := _api_guard(request)) is not None:
+        return denied
+    try:
+        payload = await request.json()
+    except ValueError:
+        return JSONResponse({"error": "body must be JSON"}, status_code=400)
+    if not isinstance(payload, dict):
+        return JSONResponse({"error": "body must be a JSON object"}, status_code=400)
+    result = await run_in_threadpool(
+        publish_report,
+        payload.get("content"),
+        payload.get("title"),
+        payload.get("date"),
+        bool(payload.get("push", True)),
+    )
+    return JSONResponse(result, status_code=400 if "error" in result else 200)
+
+
+@mcp.custom_route("/healthz", methods=["GET"])
+async def healthz(request: Request) -> JSONResponse:
+    return JSONResponse({"status": "ok"})
+
+
+mcp.settings.streamable_http_path = f"/mcp/{MCP_PATH_TOKEN}"
 
 inner_app = mcp.streamable_http_app()
 
@@ -571,4 +960,11 @@ async def app(scope, receive, send):
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8002)
+    # Bind to loopback only; Nginx/Caddy terminates TLS in front of it. The
+    # access log is off because every MCP request line contains the URL token.
+    uvicorn.run(
+        app,
+        host=os.getenv("MCP_HOST", "127.0.0.1"),
+        port=int(os.getenv("MCP_PORT", "8002")),
+        access_log=False,
+    )

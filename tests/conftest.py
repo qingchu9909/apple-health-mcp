@@ -20,6 +20,9 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 # /opt/health/.env on the test runner.
 os.environ["DOTENV_PATH"] = "/dev/null"
 
+# Both services refuse to start with a token shorter than 32 characters.
+TEST_TOKEN = "t" * 64
+
 
 def _import_server(data_dir: Path):
     """Import (or reimport) mcp.server with DATA_DIR pointed at data_dir.
@@ -42,6 +45,9 @@ def _import_server(data_dir: Path):
         def tool(self):
             return lambda fn: fn
 
+        def custom_route(self, path, methods, **kw):
+            return lambda fn: fn
+
         def streamable_http_app(self):
             return lambda *a, **kw: None
 
@@ -54,8 +60,11 @@ def _import_server(data_dir: Path):
     sys.modules["mcp.server"] = parent
     sys.modules["mcp.server.fastmcp"] = fake
 
-    os.environ["HEALTH_TOKEN"] = "test-token"
+    os.environ["HEALTH_TOKEN"] = TEST_TOKEN
     os.environ["DATA_DIR"] = str(data_dir)
+    workouts_dir = data_dir.parent / "workouts"
+    workouts_dir.mkdir(exist_ok=True)
+    os.environ["WORKOUTS_DIR"] = str(workouts_dir)
     # Tests that don't care about reports get a sibling reports/ dir for free.
     reports_dir = data_dir.parent / "reports"
     reports_dir.mkdir(exist_ok=True)
@@ -70,8 +79,14 @@ def _import_server(data_dir: Path):
 
 @pytest.fixture
 def tmp_data_dir(tmp_path: Path):
-    """Empty temp directory with DATA_DIR env var pointing at it."""
-    return tmp_path
+    """Empty temp directory with DATA_DIR env var pointing at it.
+
+    It is a child of ``tmp_path`` so the sibling reports/ and workouts/
+    directories that ``_import_server`` creates are private to each test.
+    """
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    return data_dir
 
 
 @pytest.fixture
