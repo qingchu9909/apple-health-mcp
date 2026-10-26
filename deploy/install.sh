@@ -158,17 +158,41 @@ set_env USER_TZ "$USER_TZ"
 for key in TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID SERVERCHAN_SENDKEY PUSHPLUS_TOKEN; do
   if [[ -n ${!key:-} ]]; then set_env "$key" "${!key}"; fi
 done
-if [[ -n $(get_env TELEGRAM_BOT_TOKEN) && -z $(get_env TELEGRAM_CHAT_ID) ]]; then
-  chat_id=$(curl -fsS --max-time 15 "https://api.telegram.org/bot$(get_env TELEGRAM_BOT_TOKEN)/getUpdates" |
-    "$BASE/venv/bin/python" -c '
+telegram_bot() {
+  # The bot's @username, or nothing when the token is wrong.
+  curl -sS --max-time 15 "$1/getMe" | "$BASE/venv/bin/python" -c '
+import json, sys
+print(json.load(sys.stdin).get("result", {}).get("username", ""))' 2>/dev/null || true
+}
+telegram_chat() {
+  # The chat of the newest message the bot has received.
+  curl -fsS --max-time 15 "$1/getUpdates" | "$BASE/venv/bin/python" -c '
 import json, sys
 updates = json.load(sys.stdin).get("result", [])
 chats = [u[k]["chat"]["id"] for u in updates for k in ("message", "my_chat_member") if k in u]
-print(chats[-1] if chats else "")' 2>/dev/null || true)
-  if [[ -n $chat_id ]]; then
-    set_env TELEGRAM_CHAT_ID "$chat_id"
+print(chats[-1] if chats else "")' 2>/dev/null || true
+}
+if [[ -n $(get_env TELEGRAM_BOT_TOKEN) && -z $(get_env TELEGRAM_CHAT_ID) ]]; then
+  tg="https://api.telegram.org/bot$(get_env TELEGRAM_BOT_TOKEN)"
+  bot=$(telegram_bot "$tg")
+  if [[ -z $bot ]]; then
+    fail "Telegram：令牌不对（或连不上 Telegram）。在 BotFather 里发 /mybots，选你的机器人，点 API Token 复制完整的令牌，再重新运行"
   else
-    fail "Telegram：没找到对话。先在 Telegram 里给你的机器人发一句话，再重新运行这条命令"
+    chat_id=$(telegram_chat "$tg")
+    if [[ -z $chat_id ]]; then
+      warn "这个令牌属于 @$bot。现在去 Telegram 里搜 @$bot，给它发一句话，我等 2 分钟……"
+      for _ in $(seq 1 24); do
+        sleep 5
+        chat_id=$(telegram_chat "$tg")
+        if [[ -n $chat_id ]]; then break; fi
+      done
+    fi
+    if [[ -n $chat_id ]]; then
+      set_env TELEGRAM_CHAT_ID "$chat_id"
+      ok "Telegram：找到了你和 @$bot 的对话"
+    else
+      fail "Telegram：@$bot 一直没收到消息。在 Telegram 里搜 @$bot，给它发一句话，再重新运行这条命令"
+    fi
   fi
 fi
 printf 'DOMAIN=%q\nREPO_URL=%q\nREF=%q\nWEB=%q\nHTTPS_PORT=%q\n' \
