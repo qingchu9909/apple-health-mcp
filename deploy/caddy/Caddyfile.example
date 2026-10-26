@@ -1,0 +1,33 @@
+# Single-domain Caddy site for both services (used by deploy/install.sh).
+# Caddy obtains and renews the TLS certificate on its own. Replace
+# `health.example.com`, add this block to /etc/caddy/Caddyfile, then run
+# `systemctl reload caddy`. Caddy writes no access log unless `log` is set,
+# so the connector token in /mcp/<token> stays out of the logs.
+
+health.example.com {
+	request_body {
+		max_size 200MB
+	}
+
+	handle /ingest {
+		reverse_proxy 127.0.0.1:8001
+	}
+
+	handle /health {
+		reverse_proxy 127.0.0.1:8001
+	}
+
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8002
+	}
+
+	handle /mcp/* {
+		reverse_proxy 127.0.0.1:8002 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		respond 404
+	}
+}

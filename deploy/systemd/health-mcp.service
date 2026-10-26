@@ -1,0 +1,21 @@
+[Unit]
+Description=Apple Health MCP server (Claude connector + report API)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=@USER@
+Group=@USER@
+WorkingDirectory=@APP@/mcp
+Environment=DOTENV_PATH=@BASE@/.env
+ExecStart=@BASE@/venv/bin/python server.py
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=@BASE@/data @BASE@/reports
+
+[Install]
+WantedBy=multi-user.target

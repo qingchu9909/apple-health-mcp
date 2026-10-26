@@ -1,0 +1,21 @@
+[Unit]
+Description=Apple Health ingest service (Health Auto Export uploads)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=@USER@
+Group=@USER@
+WorkingDirectory=@APP@/ingest
+Environment=DOTENV_PATH=@BASE@/.env
+ExecStart=@BASE@/venv/bin/uvicorn main:app --host 127.0.0.1 --port 8001
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=@BASE@/data @BASE@/workouts
+
+[Install]
+WantedBy=multi-user.target
