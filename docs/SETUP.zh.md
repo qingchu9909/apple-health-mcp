@@ -31,10 +31,10 @@ curl -fsSL https://raw.githubusercontent.com/<你的 GitHub 用户名>/apple-hea
   | DOMAIN=health.example.com USER_TZ=Asia/Shanghai TELEGRAM_BOT_TOKEN=123456789:AA... bash
 ```
 
-脚本会：建一个专用系统用户、装好 Python 3.12 和依赖、生成三个随机令牌、注册两个开机自启的后台服务、配置 HTTPS（端口 80/443 空闲时自动装 Caddy 并申请证书；已有 Caddy 或 Nginx 时接入现有的），然后逐项自检，最后把要填到手机和 Claude 里的配置发到你的 Telegram / 微信。
+脚本会：建一个专用系统用户、装好 Python 3.12 和依赖、生成三个随机令牌、注册两个开机自启的后台服务、配置 HTTPS（443 端口空闲时自动装 Caddy 并申请证书，且不占用 80 端口；已有 Caddy 或 Nginx 时接入现有的），然后逐项自检，最后把要填到手机和 Claude 里的配置发到你的 Telegram / 微信。
 
 - 用微信就把 `TELEGRAM_BOT_TOKEN=...` 换成 `SERVERCHAN_SENDKEY=...` 或 `PUSHPLUS_TOKEN=...`，也可以都填。
-- 80/443 被别的程序（比如代理）占用时，脚本不会动它，会提示你；可以加 `HTTPS_PORT=8443` 换一个端口（此时 80 端口要空着用来申请证书）。
+- 443 被别的程序（比如代理）占用时，脚本不会动它，会提示你；可以加 `HTTPS_PORT=8443` 换一个端口（此时 80 端口要空着用来申请证书）。
 - 可以放心重复运行：令牌只在第一次生成，之后保持不变。
 - 以后再看配置：`bash /opt/health/app/deploy/show-config.sh`
 - 更新代码：`bash /opt/health/app/deploy/update.sh`

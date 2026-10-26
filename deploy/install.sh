@@ -9,8 +9,8 @@
 #   USER_TZ                your time zone, e.g. Asia/Shanghai (kept in /opt/health/.env)
 #   REPO_URL, REF          where the code comes from (default: this fork, main)
 #   WEB=auto|caddy|nginx|none
-#                          reverse proxy to configure; auto uses Caddy when ports
-#                          80/443 are free and an existing Caddy or Nginx otherwise
+#                          reverse proxy to configure; auto uses an existing Caddy or
+#                          Nginx, else installs Caddy when the HTTPS port is free
 #   HTTPS_PORT=443         public HTTPS port
 # Push channels (any subset, stored in /opt/health/.env):
 #   TELEGRAM_BOT_TOKEN     TELEGRAM_CHAT_ID is read from the bot's latest message when unset
@@ -222,14 +222,22 @@ setup_caddy() {
   local site=/etc/caddy/health-butler.caddy addr=$DOMAIN fresh=0
   [[ $HTTPS_PORT == 443 ]] || addr="$DOMAIN:$HTTPS_PORT"
   if ! command -v caddy >/dev/null; then
-    apt-get install -y -qq caddy >/dev/null
+    # The package starts a welcome page on :80, which fails when 80 is taken;
+    # that is fine, the config is replaced and Caddy restarted below.
+    apt-get install -y -qq caddy >/dev/null 2>&1 || true
+    if ! command -v caddy >/dev/null; then
+      fail "Caddy 安装失败：apt-get install caddy"
+      return 1
+    fi
     fresh=1
   fi
   sed "s|^health\.example\.com {|$addr {|" "$APP/deploy/caddy/Caddyfile.example" >"$site"
   if ((fresh)); then
-    # A packaged Caddy only serves its welcome page; replace that config.
+    # Replace the welcome page. No HTTP->HTTPS redirects, so Caddy never
+    # holds port 80 (x-ui / acme.sh renewals often need it); certificates
+    # come via TLS-ALPN on 443, or a short-lived listener on 80.
     cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.dist
-    printf 'import %s\n' "$site" >/etc/caddy/Caddyfile
+    printf '{\n\tauto_https disable_redirects\n}\n\nimport %s\n' "$site" >/etc/caddy/Caddyfile
   elif ! grep -qxF "import $site" /etc/caddy/Caddyfile; then
     cp /etc/caddy/Caddyfile "/etc/caddy/Caddyfile.bak.$(date +%s)"
     printf '\nimport %s\n' "$site" >>/etc/caddy/Caddyfile
@@ -287,10 +295,10 @@ if [[ $WEB != none ]]; then
       web=caddy
     elif [[ $p80 == nginx || $p443 == nginx ]]; then
       web=nginx
-    elif [[ -z $p80 && -z $p443 ]]; then
+    elif [[ -z $p443 ]]; then
       web=caddy
     else
-      fail "端口 80 / $HTTPS_PORT 正被 ${p80:-空闲} / ${p443:-空闲} 使用，我没有动它。把这段输出发给 Claude"
+      fail "端口 $HTTPS_PORT 正被 $p443 使用，我没有动它。可以加 HTTPS_PORT=8443 换个端口重跑（80 端口需空闲以申请证书），或把这段输出发给 Claude"
       web=none
     fi
   fi

@@ -153,8 +153,8 @@ curl -fsSL https://raw.githubusercontent.com/<you>/apple-health-mcp/main/deploy/
   | DOMAIN=health.example.com USER_TZ=Europe/London TELEGRAM_BOT_TOKEN=123:abc bash
 ```
 
-It installs everything under `/opt/health`, configures HTTPS (Caddy when ports
-80/443 are free, otherwise an existing Caddy or Nginx), checks every endpoint,
+It installs everything under `/opt/health`, configures HTTPS (Caddy when port 443
+is free, leaving port 80 alone; otherwise an existing Caddy or Nginx), checks every endpoint,
 and sends the values to enter on the phone and in Claude to your push channel.
 Re-running it is safe; `deploy/update.sh` updates. Settings are documented at
 the top of the script; the steps on the phone and in Claude are in
