@@ -55,8 +55,7 @@ curl -fsSL https://raw.githubusercontent.com/qingchu9909/apple-health-mcp/main/d
 | Data Type | Health Metrics |
 | Select Health Metrics | 全选 |
 | Export Format | CSV |
-| Summarize Data | 开 |
-| Time Grouping | Days（服务器按每天一行来读） |
+| Time Grouping | Days（服务器按每天一行来读；旧版 App 另有 Summarize Data 开关，要打开） |
 | Date Range | **Default**（前一整天 + 今天到目前为止。每次都会重发完整的昨天，服务器自动去重，漏掉的同步也能补上） |
 | Sync Cadence | 每 1 小时 |
 
