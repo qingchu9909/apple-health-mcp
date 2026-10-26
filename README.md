@@ -22,7 +22,7 @@ week?"* or *"summarize my sleep over the past 14 days"* against your real
 Apple Health data — without uploading anything to a third-party service.
 
 > **About this fork.** It adds a one-command installer (`deploy/install.sh`,
-> one domain, Caddy or Nginx, systemd), workouts, push notifications
+> one domain, Caddy or Nginx, including Nginx in Docker, systemd), workouts, push notifications
 > (Telegram, Server酱, PushPlus), an HTTPS API that Claude's scheduled cloud
 > routines can use for a daily report, time-zone handling, separate tokens
 > for upload / connector / report API, and fixes for duplicate exports and
@@ -110,6 +110,7 @@ apple-health-mcp/
 │   ├── systemd/               Units used by install.sh
 │   ├── caddy/Caddyfile.example                 Single-domain Caddy site
 │   ├── nginx/health.single-domain.example.conf Single-domain Nginx site
+│   ├── nginx/health.docker.example.conf        Same, for Nginx in Docker (kejilion.sh LDNMP)
 │   ├── nginx/{ingest,mcp}.example.conf         Original two-subdomain templates
 │   └── supervisor/            Original process supervisor units
 ├── docs/SETUP.zh.md           Chinese step-by-step setup guide
@@ -154,7 +155,9 @@ curl -fsSL https://raw.githubusercontent.com/<you>/apple-health-mcp/main/deploy/
 ```
 
 It installs everything under `/opt/health`, configures HTTPS (Caddy when port 443
-is free, leaving port 80 alone; otherwise an existing Caddy or Nginx), checks every endpoint,
+is free, leaving port 80 alone; otherwise an existing Caddy or Nginx, or an Nginx
+container with host networking such as the kejilion.sh LDNMP stack, where it adds
+a site to the container's `conf.d` and gets the certificate with acme.sh), checks every endpoint,
 and sends the values to enter on the phone and in Claude to your push channel.
 Re-running it is safe; `deploy/update.sh` updates. Settings are documented at
 the top of the script; the steps on the phone and in Claude are in

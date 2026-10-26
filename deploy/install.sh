@@ -8,9 +8,10 @@
 #   DOMAIN                 public host name, its A record pointing at this server
 #   USER_TZ                your time zone, e.g. Asia/Shanghai (kept in /opt/health/.env)
 #   REPO_URL, REF          where the code comes from (default: this fork, main)
-#   WEB=auto|caddy|nginx|none
-#                          reverse proxy to configure; auto uses an existing Caddy or
-#                          Nginx, else installs Caddy when the HTTPS port is free
+#   WEB=auto|caddy|nginx|nginx-docker|none
+#                          reverse proxy to configure; auto uses an existing Caddy,
+#                          Nginx, or Nginx in Docker (kejilion.sh LDNMP layout), else
+#                          installs Caddy when the HTTPS port is free
 #   HTTPS_PORT=443         public HTTPS port
 # Push channels (any subset, stored in /opt/health/.env):
 #   TELEGRAM_BOT_TOKEN     TELEGRAM_CHAT_ID is read from the bot's latest message when unset
@@ -91,6 +92,7 @@ if [[ $WEB != none && ! $DOMAIN =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-
   die "请在命令里加上域名，例如 DOMAIN=health.example.com"
 fi
 [[ $HTTPS_PORT =~ ^[0-9]+$ ]] || die "HTTPS_PORT 必须是数字"
+[[ $WEB =~ ^(auto|caddy|nginx|nginx-docker|none)$ ]] || die "WEB 只能是 auto、caddy、nginx、nginx-docker 或 none"
 PUBLIC_BASE="https://${DOMAIN:-<你的域名>}"
 [[ $HTTPS_PORT == 443 ]] || PUBLIC_BASE+=":$HTTPS_PORT"
 
@@ -218,6 +220,18 @@ fi
 
 port_owner() { ss -ltnpH "( sport = :$1 )" 2>/dev/null | sed -nE 's/.*users:\(\("([^"]+)".*/\1/p' | head -n 1; }
 
+# Name of the Docker container whose process listens on TCP port $1.
+port_container() {
+  local pid id name
+  command -v docker >/dev/null || return 1
+  pid=$(ss -ltnpH "( sport = :$1 )" 2>/dev/null | grep -oE 'pid=[0-9]+' | head -n 1 | cut -d= -f2 || true)
+  [[ -n $pid ]] || return 1
+  id=$(grep -oE '[0-9a-f]{64}' "/proc/$pid/cgroup" 2>/dev/null | head -n 1 || true)
+  [[ -n $id ]] || return 1
+  name=$(docker inspect -f '{{.Name}}' "$id" 2>/dev/null) || return 1
+  printf '%s\n' "${name#/}"
+}
+
 setup_caddy() {
   local site=/etc/caddy/health-butler.caddy addr=$DOMAIN fresh=0
   [[ $HTTPS_PORT == 443 ]] || addr="$DOMAIN:$HTTPS_PORT"
@@ -276,6 +290,123 @@ setup_nginx() {
   ok "Nginx 已接管 $DOMAIN:$HTTPS_PORT，证书由 certbot 自动续期"
 }
 
+# Host directory bind-mounted at path $2 inside container $1.
+mount_source() {
+  docker inspect -f "{{range .Mounts}}{{if eq .Destination \"$2\"}}{{.Source}}{{end}}{{end}}" "$1" 2>/dev/null
+}
+
+# Site config for Nginx in Docker: $1 = http (port-80 block only) or full,
+# $2 = the container's Nginx version.
+render_nginx_docker() {
+  local args=(-e "s/health\.example\.com/$DOMAIN/g")
+  if [[ $1 == http ]]; then args+=(-e "/^# ---- HTTPS/,\$d"); fi
+  if [[ $HTTPS_PORT != 443 ]]; then
+    args+=(-e "s/listen 443 ssl;/listen $HTTPS_PORT ssl;/"
+      -e "s/listen \[::\]:443 ssl;/listen [::]:$HTTPS_PORT ssl;/"
+      -e "s|https://\$host\$request_uri|https://\$host:$HTTPS_PORT\$request_uri|")
+  fi
+  if [[ ! -e /proc/net/if_inet6 ]]; then args+=(-e '/listen \[::\]/d'); fi
+  # A per-site `http2 off` needs Nginx 1.25.1 or later.
+  if [[ $(printf '%s\n' 1.25.1 "$2" | sort -V | head -n 1) != 1.25.1 ]]; then args+=(-e '/^ *http2 off;/d'); fi
+  sed "${args[@]}" "$APP/deploy/nginx/health.docker.example.conf"
+}
+
+# Make file $3 the live site config $2 of container $1, or put back the
+# previous file when Nginx rejects it.
+nginx_docker_load() {
+  local ctr=$1 conf=$2 new=$3 old="" err
+  if [[ -f $conf ]]; then
+    old=$(mktemp)
+    cp "$conf" "$old"
+  fi
+  install -m 644 "$new" "$conf"
+  if ! err=$(docker exec "$ctr" nginx -t 2>&1); then
+    if [[ -n $old ]]; then mv "$old" "$conf"; else rm -f "$conf"; fi
+    err=$(grep -m 1 emerg <<<"$err" || head -n 1 <<<"$err")
+    fail "Nginx 不接受新配置，已撤回：$err"
+    return 1
+  fi
+  rm -f "$old"
+  if ! docker exec "$ctr" nginx -s reload >/dev/null 2>&1; then
+    fail "Nginx 重载失败：docker exec $ctr nginx -s reload"
+    return 1
+  fi
+}
+
+# Nginx running in Docker with host networking, as set up by kejilion.sh: add
+# <domain>.conf to its conf.d and get the certificate with acme.sh's webroot
+# mode, which renews it and reloads the container on its own.
+setup_nginx_docker() {
+  local ctr conf_dir cert_dir webroot conf cert version tmp probe log rc f
+  local acme=/root/.acme.sh/acme.sh
+  ctr=$(port_container 80 || port_container "$HTTPS_PORT" || echo nginx)
+  if [[ $(docker inspect -f '{{.HostConfig.NetworkMode}}' "$ctr" 2>/dev/null) != host ]]; then
+    fail "Docker 里的 Nginx（容器 $ctr）不是 host 网络模式，我没有动它。把这段输出发给 Claude"
+    return 1
+  fi
+  conf_dir=$(mount_source "$ctr" /etc/nginx/conf.d)
+  cert_dir=$(mount_source "$ctr" /etc/nginx/certs)
+  webroot=$(mount_source "$ctr" /var/www/letsencrypt)
+  if [[ -z $conf_dir || -z $cert_dir || -z $webroot ]]; then
+    fail "Nginx 容器 $ctr 没有挂载 conf.d、certs、letsencrypt 目录，我没有动它。把这段输出发给 Claude"
+    return 1
+  fi
+  conf=$conf_dir/$DOMAIN.conf
+  cert=$cert_dir/${DOMAIN}_cert.pem
+  if [[ -e $conf ]] && ! grep -q apple-health-mcp "$conf"; then
+    fail "$conf 已经存在，不是本脚本写的，我没有动它。换一个子域名重跑"
+    return 1
+  fi
+  for f in "$conf_dir"/*.conf; do
+    [[ -f $f && $f != "$conf" ]] || continue
+    if awk -v d="$DOMAIN" '$1 == "server_name" { for (i = 2; i <= NF; i++) { n = $i; sub(/;$/, "", n); if (n == d) found = 1 } } END { exit !found }' "$f"; then
+      fail "$f 里已经有 $DOMAIN 的站点，我没有动它。换一个子域名重跑"
+      return 1
+    fi
+  done
+  version=$(docker exec "$ctr" nginx -v 2>&1 | sed -n 's|.*nginx/\([0-9.]*\).*|\1|p')
+  tmp=$(mktemp)
+
+  if ! openssl x509 -checkend 86400 -noout -in "$cert" >/dev/null 2>&1; then
+    if [[ ! -x $acme ]]; then
+      fail "没找到 acme.sh（$acme），没法申请证书"
+      return 1
+    fi
+    render_nginx_docker http "$version" >"$tmp"
+    nginx_docker_load "$ctr" "$conf" "$tmp" || return 1
+    # Check the challenge path locally first: Let's Encrypt rate-limits failures.
+    probe=hb-$(new_token | cut -c 1-16)
+    install -d -m 755 "$webroot/.well-known/acme-challenge"
+    echo "$probe" >"$webroot/.well-known/acme-challenge/$probe"
+    if wait_for "http://$DOMAIN/.well-known/acme-challenge/$probe" 10 --resolve "$DOMAIN:80:127.0.0.1"; then rc=0; else rc=1; fi
+    rm -f "$webroot/.well-known/acme-challenge/$probe"
+    if ((rc)); then
+      fail "Nginx 没有按新配置提供验证文件：docker exec $ctr nginx -T | grep -n $DOMAIN"
+      return 1
+    fi
+    log=$(mktemp)
+    if "$acme" --issue -d "$DOMAIN" --webroot "$webroot" --keylength ec-256 --server letsencrypt >"$log" 2>&1; then rc=0; else rc=$?; fi
+    # Exit code 2: acme.sh already holds a current certificate for this name.
+    if ((rc == 0 || rc == 2)); then
+      if "$acme" --install-cert -d "$DOMAIN" --ecc \
+        --key-file "$cert_dir/${DOMAIN}_key.pem" --fullchain-file "$cert" \
+        --reloadcmd "docker exec $ctr nginx -s reload" >"$log" 2>&1; then rc=0; else rc=1; fi
+    fi
+    if ((rc)); then
+      tail -n 15 "$log" >&2
+      rm -f "$log"
+      fail "证书申请失败（acme.sh），上面是它最后几行输出。域名刚加的话，等几分钟再重跑"
+      return 1
+    fi
+    rm -f "$log"
+  fi
+
+  render_nginx_docker full "$version" >"$tmp"
+  nginx_docker_load "$ctr" "$conf" "$tmp" || return 1
+  rm -f "$tmp"
+  ok "已接入 Docker 里的 Nginx（容器 $ctr）：$conf，证书由 acme.sh 自动续期"
+}
+
 if [[ $WEB != none ]]; then
   step "HTTPS（$PUBLIC_BASE）"
   public_ip=$(curl -fsS4 --max-time 10 https://api.ipify.org 2>/dev/null || true)
@@ -295,6 +426,7 @@ if [[ $WEB != none ]]; then
       web=caddy
     elif [[ $p80 == nginx || $p443 == nginx ]]; then
       web=nginx
+      if port_container 80 >/dev/null || port_container "$HTTPS_PORT" >/dev/null; then web=nginx-docker; fi
     elif [[ -z $p443 ]]; then
       web=caddy
     else
@@ -309,6 +441,7 @@ if [[ $WEB != none ]]; then
   case $web in
     caddy) setup_caddy || web=none ;;
     nginx) setup_nginx || web=none ;;
+    nginx-docker) setup_nginx_docker || web=none ;;
   esac
 
   if [[ $web != none ]]; then

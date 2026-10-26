@@ -16,7 +16,7 @@ https://你的域名/ingest            你的服务器（本仓库）
 ## 0. 准备
 
 - 一台 Debian 12/13 或 Ubuntu 22.04+ 的服务器（1 核 1 GB 就够），有 root 权限。
-- 一个域名，A 记录指向服务器 IP。用 Cloudflare 的话选 **仅 DNS（灰色云朵）**。
+- 一个域名，A 记录指向服务器 IP。用 Cloudflare 的话选 **仅 DNS（灰色云朵）**。主域名已经有网站的话，加一个子域名（例如 `health`）专门给它用。先加好记录再运行安装命令。
 - iPhone 上的 [Health Auto Export](https://apps.apple.com/app/id1115567069)，需要 Premium（自动上传要用）。
 - 推送渠道，任选：
   - **Telegram（推荐，免费不限条数）**：在 Telegram 里找 @BotFather，发 `/newbot`，按提示起名，拿到形如 `123456789:AA...` 的机器人令牌。然后打开你的新机器人，随便发一句话（安装脚本靠这条消息找到你的对话）。
@@ -27,11 +27,11 @@ https://你的域名/ingest            你的服务器（本仓库）
 用 root 登录服务器，粘贴（把域名、时区、机器人令牌换成你的）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<你的 GitHub 用户名>/apple-health-mcp/main/deploy/install.sh \
+curl -fsSL https://raw.githubusercontent.com/qingchu9909/apple-health-mcp/main/deploy/install.sh \
   | DOMAIN=health.example.com USER_TZ=Asia/Shanghai TELEGRAM_BOT_TOKEN=123456789:AA... bash
 ```
 
-脚本会：建一个专用系统用户、装好 Python 3.12 和依赖、生成三个随机令牌、注册两个开机自启的后台服务、配置 HTTPS（443 端口空闲时自动装 Caddy 并申请证书，且不占用 80 端口；已有 Caddy 或 Nginx 时接入现有的），然后逐项自检，最后把要填到手机和 Claude 里的配置发到你的 Telegram / 微信。
+脚本会：建一个专用系统用户、装好 Python 3.12 和依赖、生成三个随机令牌、注册两个开机自启的后台服务、配置 HTTPS（443 端口空闲时自动装 Caddy 并申请证书，且不占用 80 端口；已有 Caddy 或 Nginx 时接入现有的。科技lion 脚本那种跑在 Docker 里的 Nginx 也认得：在它的 `/home/web/conf.d` 里加一个独立站点，用 acme.sh 申请证书并自动续期，不动原有站点），然后逐项自检，最后把要填到手机和 Claude 里的配置发到你的 Telegram / 微信。
 
 - 用微信就把 `TELEGRAM_BOT_TOKEN=...` 换成 `SERVERCHAN_SENDKEY=...` 或 `PUSHPLUS_TOKEN=...`，也可以都填。
 - 443 被别的程序（比如代理）占用时，脚本不会动它，会提示你；可以加 `HTTPS_PORT=8443` 换一个端口（此时 80 端口要空着用来申请证书）。
@@ -120,5 +120,6 @@ claude.ai（网页或手机 App）→ **设置 → 连接器 → 添加自定义
 | 连接器显示 0 个工具 | URL 里的令牌抄错，或服务器上 `health-mcp` 没在运行 |
 | 定时任务报 403 | 云端环境的允许列表里没有你的域名 |
 | 推送失败 | Telegram：先给机器人发过消息吗？微信：SendKey 是否正确、免费额度是否用完 |
+| 证书申请失败 | 域名刚加的话等几分钟再重跑；Cloudflare 必须是灰色云朵（仅 DNS）；80 端口要能从外网访问 |
 
 数据存在你自己的服务器上，三个令牌分别控制「上传数据」「问答读取」「日报接口」，任何一个泄露只需单独更换那一个。
