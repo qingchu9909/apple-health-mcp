@@ -53,8 +53,36 @@ def extract_csv(body: bytes) -> bytes:
     return body
 
 
+# RFC 6750 token characters. Anything else (quotes, backticks, invisible or
+# non-breaking spaces picked up while copying) only separates words.
+_TOKEN_RE = re.compile(r"[A-Za-z0-9._~+/-]+=*")
+
+
+def _presented_token(header: str | None) -> str:
+    """The token in an Authorization header, forgiving copy-paste slips.
+
+    The phone app takes the header value from a free-text field, so accept
+    "Bearer <token>" in any capitalisation or the bare token, ignoring stray
+    spaces, quotes, backticks and invisible characters around it.
+    """
+    words = _TOKEN_RE.findall(header or "")
+    return words[-1] if words else ""
+
+
 def _authorized(header: str | None) -> bool:
-    return header is not None and hmac.compare_digest(header.encode(), f"Bearer {TOKEN}".encode())
+    return hmac.compare_digest(_presented_token(header).encode(), TOKEN.encode())
+
+
+def _rejection_reason(header: str | None) -> str:
+    """Why a request was refused, for the service log. Never logs the token."""
+    if not header:
+        return "no Authorization header (the header name must be Authorization)"
+    token = _presented_token(header)
+    for name in ("REPORT_API_TOKEN", "MCP_PATH_TOKEN"):
+        other = os.getenv(name)
+        if other and hmac.compare_digest(token.encode(), other.encode()):
+            return f"the value is {name}; use the HEALTH_TOKEN line (Bearer ...) instead"
+    return f"token mismatch: got {len(token)} characters, expected {len(TOKEN)}"
 
 
 def _file_stamp() -> str:
@@ -104,6 +132,7 @@ def save_workouts(payload) -> dict:
 @app.post("/ingest")
 async def ingest(request: Request, authorization: str | None = Header(None)):
     if not _authorized(authorization):
+        print(f"[ingest] 401: {_rejection_reason(authorization)}", flush=True)
         raise HTTPException(status_code=401, detail="Unauthorized")
 
     body = await request.body()

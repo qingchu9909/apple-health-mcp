@@ -107,6 +107,7 @@ apple-health-mcp/
 │   ├── install.sh             One-command installer (Debian/Ubuntu, run as root)
 │   ├── update.sh              Pull the latest code and re-run the installer
 │   ├── show-config.sh         Print the values for the phone, connector and routine
+│   ├── status.sh              Recent uploads from the phone and the data on disk
 │   ├── systemd/               Units used by install.sh
 │   ├── caddy/Caddyfile.example                 Single-domain Caddy site
 │   ├── nginx/health.single-domain.example.conf Single-domain Nginx site
@@ -319,7 +320,7 @@ updating the URL in both Health Auto Export and the Claude connector.
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
-| `401 Unauthorized` from `/ingest` | Header not `Bearer <token>` exactly. | Re-check the iPhone automation's Authorization header. |
+| `401 Unauthorized` from `/ingest` | Wrong or missing Authorization header. | `bash /opt/health/app/deploy/status.sh` lists recent uploads and why each refused one failed. |
 | `421 Misdirected Request` from MCP | HTTP/2 enabled on the MCP vhost. | Remove `http2` from `listen 443 ssl` for the MCP server block. |
 | `Missing column ... 'Date/Time'` | A CSV is wrapped in a multipart envelope. | Already handled by `_read_csv_tolerant`; if you see it, check the file is actually CSV-shaped. |
 | Tools return *"No health data available yet."* | No CSVs in `DATA_DIR`. | Confirm Health Auto Export has run successfully. |

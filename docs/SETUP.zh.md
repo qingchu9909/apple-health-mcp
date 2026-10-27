@@ -105,7 +105,7 @@ claude.ai（网页或手机 App）→ **设置 → 连接器 → 添加自定义
 | --- | --- |
 | 看服务状态 | `systemctl status health-ingest health-mcp` |
 | 看日志 | `journalctl -u health-mcp -n 100` |
-| 看收到了哪些数据 | `ls -lt /opt/health/data /opt/health/workouts \| head` |
+| 看手机最近传上来没有、收到了哪些数据 | `bash /opt/health/app/deploy/status.sh`（被拒的上传会写明原因） |
 | 看历史日报 | `ls /opt/health/reports` |
 | 重新显示配置 | `bash /opt/health/app/deploy/show-config.sh` |
 | 更新到最新代码 | `bash /opt/health/app/deploy/update.sh` |
@@ -115,7 +115,7 @@ claude.ai（网页或手机 App）→ **设置 → 连接器 → 添加自定义
 
 | 现象 | 原因和办法 |
 | --- | --- |
-| Health Auto Export 报 401 | Header 值不对：必须是 `Bearer ` 加令牌，Bearer 后有一个空格 |
+| Health Auto Export 报 401 | Header 值不对。运行 `bash /opt/health/app/deploy/status.sh` 看原因：缺少 Header 是名字没填成 `Authorization`；「got N characters」是令牌复制得不完整；提到 REPORT_API_TOKEN / MCP_PATH_TOKEN 是贴成了另外两组里的令牌 |
 | 一直没有新数据 | 自动化只在手机解锁时运行；检查后台 App 刷新、加小组件，在 App 的 Activity Logs 里看报错 |
 | 日报说「昨晚睡眠还没同步」 | 定时任务比你解锁手机还早，把运行时间往后调 |
 | 连接器显示 0 个工具 | URL 里的令牌抄错，或服务器上 `health-mcp` 没在运行 |

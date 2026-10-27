@@ -30,6 +30,44 @@ def test_rejects_missing_or_wrong_token(tmp_path: Path, monkeypatch):
     _, client = _load(tmp_path, monkeypatch)
     assert client.post("/ingest", content=b"x").status_code == 401
     assert client.post("/ingest", content=b"x", headers={"Authorization": "Bearer None"}).status_code == 401
+    assert client.post("/ingest", content=b"x", headers={"Authorization": "Bearer"}).status_code == 401
+    wrong = {"Authorization": f"Bearer {TEST_TOKEN[:-1]}"}
+    assert client.post("/ingest", content=b"x", headers=wrong).status_code == 401
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        f"bearer {TEST_TOKEN}",
+        f"  Bearer {TEST_TOKEN} ",
+        f"Bearer {TEST_TOKEN}",
+        f"Bearer {TEST_TOKEN}​",
+        f"`Bearer {TEST_TOKEN}`",
+        f"Header 值：Bearer {TEST_TOKEN}",
+        TEST_TOKEN,
+    ],
+)
+def test_accepts_the_token_despite_copy_paste_slips(tmp_path: Path, monkeypatch, value):
+    _, client = _load(tmp_path, monkeypatch)
+    # Raw UTF-8 bytes, as a phone sends a pasted value.
+    response = client.post("/ingest", content=b"", headers={"Authorization": value.encode()})
+    assert response.status_code == 200
+
+
+def test_logs_why_a_request_was_refused(tmp_path: Path, monkeypatch, capsys):
+    monkeypatch.setenv("REPORT_API_TOKEN", "r" * 64)
+    _, client = _load(tmp_path, monkeypatch)
+
+    client.post("/ingest", content=b"")
+    assert "no Authorization header" in capsys.readouterr().out
+
+    client.post("/ingest", content=b"", headers={"Authorization": "Bearer " + "r" * 64})
+    assert "REPORT_API_TOKEN" in capsys.readouterr().out
+
+    client.post("/ingest", content=b"", headers={"Authorization": f"Bearer {TEST_TOKEN[:-1]}"})
+    out = capsys.readouterr().out
+    assert "got 63 characters, expected 64" in out
+    assert TEST_TOKEN[:-1] not in out
 
 
 def test_multipart_csv_is_unwrapped_and_never_overwritten(tmp_path: Path, monkeypatch):
