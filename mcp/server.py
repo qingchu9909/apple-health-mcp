@@ -213,13 +213,55 @@ def _naive_local(series: pd.Series) -> pd.Series:
     return series.dt.tz_convert(USER_TZ or datetime.now().astimezone().tzinfo).dt.tz_localize(None)
 
 
+def _day_totals(df: pd.DataFrame) -> pd.Series:
+    """Rows holding a whole day: an export grouped by day has one row per date,
+    stamped at midnight. A midnight row among the same file's minute rows for
+    that date is only that minute."""
+    stamps = df["Date/Time"]
+    dates = stamps.dt.normalize()
+    return (stamps == dates) & dates.map(dates.value_counts()).eq(1)
+
+
+def _drop_covered_day_totals(frames: list[pd.DataFrame]) -> list[pd.DataFrame]:
+    """Drop a day's total wherever another export has that day minute by minute.
+
+    A backfill grouped by day and the hourly sync grouped by minute both cover
+    the most recent dates, so summing such a day would count its steps twice.
+    The minute rows keep arriving while the total was a snapshot, so they win,
+    metric by metric: a total still fills in what the minute rows never carry,
+    such as the night's sleep analysis.
+    """
+    totals = [_day_totals(f) for f in frames]
+    covered = [
+        f[~is_total].drop(columns="Date/Time").notna().astype("int8")
+        .groupby(f.loc[~is_total, "Date/Time"].dt.normalize()).max()
+        for f, is_total in zip(frames, totals, strict=True)
+        if not is_total.all()
+    ]
+    if not covered or not any(is_total.any() for is_total in totals):
+        return frames
+    covered = pd.concat(covered).groupby(level=0).max() > 0
+    result = []
+    for f, is_total in zip(frames, totals, strict=True):
+        if not is_total.any():
+            result.append(f)
+            continue
+        days = f[is_total]
+        values = [c for c in days.columns if c != "Date/Time"]
+        hit = covered.reindex(index=days["Date/Time"], columns=values, fill_value=False)
+        days = days.copy()
+        days[values] = days[values].mask(hit.to_numpy(dtype=bool))
+        result.append(pd.concat([f[~is_total], days.dropna(how="all", subset=values)]))
+    return result
+
+
 def _merge_exports(frames: list[pd.DataFrame]) -> pd.DataFrame:
     # Frames are ordered oldest first, so for a timestamp that appears in
     # several exports (a day that was still filling up at the previous sync,
     # or two automations covering different metrics) ``last()`` keeps the
     # newest non-null value of every column instead of dropping whole rows.
     return (
-        pd.concat(frames, ignore_index=True)
+        pd.concat(_drop_covered_day_totals(frames), ignore_index=True)
         .groupby("Date/Time", sort=True)
         .last()
         .reset_index()
@@ -381,6 +423,27 @@ _GLUCOSE_NIGHT_FIELDS = [
 
 _INTEGER_FIELDS = {"steps", "flights", "glucose_night_n"}
 
+# HealthKit adds these up over a day, so from an export grouped by minute or
+# hour a day's value is the sum of its rows. So are energy and nutrients: any
+# column in kJ, kcal or a unit of mass.
+_CUMULATIVE_METRICS = {
+    "Step Count", "Walking + Running Distance", "Cycling Distance", "Swimming Distance",
+    "Wheelchair Distance", "Distance Downhill Snow Sports", "Swimming Stroke Count", "Push Count",
+    "Flights Climbed", "Apple Exercise Time", "Apple Move Time", "Apple Stand Time",
+    "Apple Stand Hour", "Time in Daylight", "Mindful Minutes", "Number of Times Fallen",
+    "Water", "Dietary Water", "Inhaler Usage", "Insulin Delivery",
+}
+_CUMULATIVE_UNITS = {"kJ", "kcal", "g", "mg", "mcg"}
+_AGG_BY_COLUMN = {col: agg for aggs in (_SLEEP_AGGS, _FITNESS_AGGS, _VITALS_AGGS) for _, col, agg in aggs}
+
+
+def _daily_agg(col: str) -> str:
+    """How one day's rows of ``col`` combine into that day's value."""
+    if col in _AGG_BY_COLUMN:
+        return _AGG_BY_COLUMN[col]
+    name, _, unit = col.rpartition(" (")
+    return "sum" if name in _CUMULATIVE_METRICS or unit.removesuffix(")") in _CUMULATIVE_UNITS else "mean"
+
 
 def _round_or_none(value, ndigits: int = 2):
     if value is None or pd.isna(value):
@@ -389,10 +452,12 @@ def _round_or_none(value, ndigits: int = 2):
 
 
 def _filter_recent(df: pd.DataFrame, days: int) -> pd.DataFrame:
+    """Rows of the last ``days`` calendar days, today included. Starting at
+    midnight keeps the first day whole when the export is grouped by minute."""
     if df.empty:
         return df
-    cutoff = _now() - timedelta(days=days)
-    return df[df["Date/Time"] >= cutoff]
+    start = datetime.combine(_today() - timedelta(days=days - 1), datetime.min.time())
+    return df[df["Date/Time"] >= start]
 
 
 def _daily_series(df: pd.DataFrame, col: str, agg: str) -> pd.Series:
@@ -560,12 +625,14 @@ def get_metric(metric: str, days: int = 30) -> str:
 
 @mcp.tool()
 def get_summary(days: int = 7) -> str:
-    """Get a health summary for the past N days."""
+    """Get a health summary for the past N days: per metric, the average,
+    lowest and highest day and the latest one (totals such as steps count
+    whole days only and give today so far on its own)."""
     df = load_all_csv()
     if df.empty:
         return _no_data()
     cutoff = _now() - timedelta(days=days)
-    recent = df[df["Date/Time"] >= cutoff]
+    recent = _filter_recent(df, days)
     summary_cols = [
         "Step Count (count)", "Heart Rate [Avg] (count/min)", "Heart Rate Variability (ms)",
         "Resting Heart Rate (count/min)", "Sleep Analysis [Asleep] (hr)",
@@ -574,14 +641,19 @@ def get_summary(days: int = 7) -> str:
         "Respiratory Rate (count/min)", "Blood Oxygen Saturation (%)", _GLUCOSE_COL,
     ]
     available = [c for c in summary_cols if c in recent.columns and recent[c].notna().any()]
-    out = [f"Health summary — last {days} days\n"]
+    out = [f"Health summary — last {days} days, one value per day\n"]
+    today = _today()
     for col in available:
-        vals = recent[col].dropna()
-        if not vals.empty:
-            out.append(
-                f"{col}: avg={vals.mean():.2f}, min={vals.min():.2f}, "
-                f"max={vals.max():.2f}, last={vals.iloc[-1]:.2f}"
-            )
+        agg = _daily_agg(col)
+        daily = _daily_series(recent, col, agg).sort_index()
+        so_far = daily.pop(today) if agg == "sum" and today in daily.index else None
+        parts = [
+            f"avg={daily.mean():.2f}, min={daily.min():.2f}, max={daily.max():.2f}, last={daily.iloc[-1]:.2f}"
+        ] if not daily.empty else []
+        if so_far is not None:
+            parts.append(f"today so far={so_far:.2f}")
+        if parts:
+            out.append(f"{col}: {', '.join(parts)}")
     for name, (directory, label, _) in _EVENT_METRICS.items():
         starts = [start for start, _ in _load_events(directory) if start >= cutoff]
         if starts:
@@ -1354,17 +1426,16 @@ _STRUCTURED_COLUMNS = {
 
 
 def other_metrics(days: int = 7) -> dict:
-    """Daily values of every other exported metric that has data in the window.
-
-    Health Auto Export CSV rows are already daily aggregates, so this is the
-    exported value per day (the mean if a day has several rows).
+    """Daily values of every other exported metric that has data in the window:
+    the day's total for metrics that add up (resting energy, stand hours,
+    time in daylight), else the day's mean.
     """
     df = _filter_recent(load_all_csv(), days)
     result = {}
     for col in df.columns:
         if col == "Date/Time" or col in _STRUCTURED_COLUMNS or not pd.api.types.is_numeric_dtype(df[col]):
             continue
-        daily = _daily_series(df, col, "mean")
+        daily = _daily_series(df, col, _daily_agg(col))
         if not daily.empty:
             result[col] = {str(day): _round_or_none(value) for day, value in daily.sort_index().items()}
     return result
