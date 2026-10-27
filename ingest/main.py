@@ -58,31 +58,41 @@ def extract_csv(body: bytes) -> bytes:
 _TOKEN_RE = re.compile(r"[A-Za-z0-9._~+/-]+=*")
 
 
-def _presented_token(header: str | None) -> str:
-    """The token in an Authorization header, forgiving copy-paste slips.
+def _token_pieces(header: str | None) -> list[str]:
+    """The pieces of the token in an Authorization header.
 
     The phone app takes the header value from a free-text field, so accept
     "Bearer <token>" in any capitalisation or the bare token, ignoring stray
-    spaces, quotes, backticks and invisible characters around it.
+    spaces, quotes, backticks and invisible characters around it. A token
+    copied across a line break arrives in several pieces.
     """
     words = _TOKEN_RE.findall(header or "")
-    return words[-1] if words else ""
+    lowered = [w.lower() for w in words]
+    if "bearer" in lowered:
+        words = words[len(lowered) - lowered[::-1].index("bearer") :]
+    return words
+
+
+def _matches(pieces: list[str], secret: str) -> bool:
+    candidates = {"".join(pieces), pieces[-1] if pieces else ""}
+    return any(hmac.compare_digest(c.encode(), secret.encode()) for c in candidates)
 
 
 def _authorized(header: str | None) -> bool:
-    return hmac.compare_digest(_presented_token(header).encode(), TOKEN.encode())
+    return _matches(_token_pieces(header), TOKEN)
 
 
 def _rejection_reason(header: str | None) -> str:
     """Why a request was refused, for the service log. Never logs the token."""
     if not header:
         return "no Authorization header (the header name must be Authorization)"
-    token = _presented_token(header)
+    pieces = _token_pieces(header)
     for name in ("REPORT_API_TOKEN", "MCP_PATH_TOKEN"):
         other = os.getenv(name)
-        if other and hmac.compare_digest(token.encode(), other.encode()):
+        if other and _matches(pieces, other):
             return f"the value is {name}; use the HEALTH_TOKEN line (Bearer ...) instead"
-    return f"token mismatch: got {len(token)} characters, expected {len(TOKEN)}"
+    split = f" in {len(pieces)} pieces" if len(pieces) > 1 else ""
+    return f"token mismatch: got {len(''.join(pieces))} characters{split}, expected {len(TOKEN)}"
 
 
 def _file_stamp() -> str:

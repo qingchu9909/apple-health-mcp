@@ -44,6 +44,8 @@ def test_rejects_missing_or_wrong_token(tmp_path: Path, monkeypatch):
         f"Bearer {TEST_TOKEN}​",
         f"`Bearer {TEST_TOKEN}`",
         f"Header 值：Bearer {TEST_TOKEN}",
+        f"Header 值：{TEST_TOKEN}",
+        f"Bearer {TEST_TOKEN[:38]} {TEST_TOKEN[38:]}",
         TEST_TOKEN,
     ],
 )
@@ -68,6 +70,9 @@ def test_logs_why_a_request_was_refused(tmp_path: Path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "got 63 characters, expected 64" in out
     assert TEST_TOKEN[:-1] not in out
+
+    client.post("/ingest", content=b"", headers={"Authorization": "Bearer abc def"})
+    assert "got 6 characters in 2 pieces, expected 64" in capsys.readouterr().out
 
 
 def test_multipart_csv_is_unwrapped_and_never_overwritten(tmp_path: Path, monkeypatch):
