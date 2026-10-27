@@ -35,6 +35,7 @@ REPORT_API_TOKEN = os.getenv("REPORT_API_TOKEN", "")
 DATA_DIR = pathlib.Path(os.getenv("DATA_DIR", "/opt/health/data"))
 REPORTS_DIR = pathlib.Path(os.getenv("REPORTS_DIR", "/opt/health/reports"))
 WORKOUTS_DIR = pathlib.Path(os.getenv("WORKOUTS_DIR", "/opt/health/workouts"))
+SLEEP_DIR = pathlib.Path(os.getenv("SLEEP_DIR", "/opt/health/sleep"))
 # Health Auto Export writes CSV timestamps in the phone's local time. Set
 # USER_TZ (e.g. Asia/Shanghai) when the VPS runs in a different zone so that
 # "today", "last N days" and report dates follow the user, not the server.
@@ -553,19 +554,20 @@ def get_fitness(days: int = 14) -> str:
 
 @mcp.tool()
 def get_daily_sleep(days: int = 14) -> str:
-    """One JSON record per night with sleep stages and wrist temperature.
+    """One JSON record per night with sleep stages, wrist temperature and,
+    when the phone also sends sleep times, when the night began and ended.
 
     Returns ``{"records": [...], "days_requested": N, "days_returned": M}``
-    where each record has ``date``, sleep-stage fields in hours
-    (``total_h``, ``asleep_h``, ``in_bed_h``, ``core_h``, ``deep_h``,
-    ``rem_h``, ``awake_h``) and ``wrist_temp_c`` (mean of per-minute
-    wrist temperature samples). Days with no sleep data are omitted.
+    where each record has ``date`` (the morning the night ended on),
+    sleep-stage fields in hours (``total_h``, ``asleep_h``, ``in_bed_h``,
+    ``core_h``, ``deep_h``, ``rem_h``, ``awake_h``), ``wrist_temp_c`` (mean
+    of per-minute wrist temperature samples) and, when known, ``bedtime``,
+    ``wake_time``, ``in_bed_start`` and ``in_bed_end`` as local
+    ``YYYY-MM-DD HH:MM``. Days with no sleep data are omitted.
     """
     df = _filter_recent(load_all_csv(), days)
-    if df.empty:
-        return _format_records([], days)
-    daily = _build_daily_frame(df, _SLEEP_AGGS)
-    return _format_records(_records_from_frame(daily), days)
+    records = _records_from_frame(_build_daily_frame(df, _SLEEP_AGGS)) if not df.empty else []
+    return _format_records(_with_sleep_times(records, days), days)
 
 
 @mcp.tool()
@@ -926,6 +928,80 @@ async def send_message(text: str, title: str = "") -> str:
     return json.dumps(results, ensure_ascii=False)
 
 
+# --- Sleep times -------------------------------------------------------------
+#
+# The CSV export only has durations. A third Health Auto Export automation
+# (Health Metrics with only Sleep Analysis selected, JSON) also says when each
+# night began and ended; the ingest service stores it as SLEEP_DIR/<date>.json,
+# named after the morning the night ended on.
+
+_SLEEP_JSON_TIMES = {
+    "sleepStart": "bedtime",
+    "sleepEnd": "wake_time",
+    "inBedStart": "in_bed_start",
+    "inBedEnd": "in_bed_end",
+}
+_SLEEP_JSON_HOURS = {
+    "totalSleep": "total_h",
+    "asleep": "asleep_h",
+    "inBed": "in_bed_h",
+    "core": "core_h",
+    "deep": "deep_h",
+    "rem": "rem_h",
+    "awake": "awake_h",
+}
+
+_sleep_cache: tuple[tuple, dict] | None = None
+
+
+def _load_sleep_times() -> dict[str, dict]:
+    """Record fields per night, keyed by date, from the JSON sleep uploads."""
+    global _sleep_cache
+    if not SLEEP_DIR.exists():
+        return {}
+    paths = sorted(p for p in SLEEP_DIR.glob("*.json") if _REPORT_DATE_RE.match(p.stem))
+    sig = tuple((p.name, p.stat().st_mtime_ns, p.stat().st_size) for p in paths)
+    if _sleep_cache is not None and _sleep_cache[0] == sig:
+        return _sleep_cache[1]
+    nights = {}
+    for path in paths:
+        try:
+            night = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            print(f"[load_sleep] skipping {path.name}: {exc}", flush=True)
+            continue
+        if not isinstance(night, dict):
+            continue
+        fields = {}
+        for source, key in _SLEEP_JSON_TIMES.items():
+            if (when := _parse_workout_time(night.get(source))) is not None:
+                fields[key] = when.strftime("%Y-%m-%d %H:%M")
+        for source, key in _SLEEP_JSON_HOURS.items():
+            if (hours := _round_or_none(night.get(source))) is not None:
+                fields[key] = hours
+        if fields:
+            nights[path.stem] = fields
+    _sleep_cache = (sig, nights)
+    return nights
+
+
+def _with_sleep_times(records: list[dict], days: int) -> list[dict]:
+    """Add the night's times to each CSV record; nights the CSV lacks get their own."""
+    nights = _load_sleep_times()
+    if not nights:
+        return records
+    cutoff = (_now() - timedelta(days=days)).date().isoformat()
+    by_date = {rec["date"]: rec for rec in records}
+    for date, fields in nights.items():
+        if date < cutoff:
+            continue
+        rec = by_date.setdefault(date, {"date": date})
+        for key, value in fields.items():
+            if rec.get(key) is None:  # the CSV value wins where both have one
+                rec[key] = value
+    return [by_date[date] for date in sorted(by_date)]
+
+
 # --- HTTP API for the scheduled report routine --------------------------------
 #
 # Scheduled cloud routines cannot reliably attach a custom MCP connector, so
@@ -945,10 +1021,12 @@ def _freshness() -> dict:
         if files
         else None
     )
+    nights = _load_sleep_times()
     result = {
         "last_upload": last_upload,
         "latest_metric_row": str(df["Date/Time"].max()) if not df.empty else None,
         "latest_workout_start": workouts[-1][0].strftime("%Y-%m-%d %H:%M") if workouts else None,
+        "latest_sleep_night": max(nights) if nights else None,
     }
     if problem := _upload_problem():
         result["problem"] = problem

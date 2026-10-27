@@ -41,7 +41,7 @@ message to your phone, and six raw tools remain as the escape hatch.
 
 | Tool | Description | Default window |
 | --- | --- | --- |
-| `get_daily_sleep` | Sleep stages + wrist temperature, one record per night. | 14 days |
+| `get_daily_sleep` | Sleep stages + wrist temperature, one record per night; bedtime and wake time when the sleep automation is set up. | 14 days |
 | `get_daily_fitness` | Steps, distance, energy, exercise/stand time, flights, walking speed, walking HR, VO2 max — aggregated per day. | 14 days |
 | `get_daily_vitals` | Heart-rate min/max/avg, resting HR, HRV, respiratory rate, blood-oxygen — aggregated per day — plus an overnight CGM glucose profile (mean/min/max, % time in 3.9–7.8 mmol/L, sample count over 22:00–08:00, keyed to the wake date). | 14 days |
 | `get_baselines` | p10/p50/p90 + yesterday + 7d-vs-30d trend for every headline metric. | 30 days |
@@ -276,6 +276,12 @@ Open the app, go to **Automations**, and add a REST API automation:
 Add a second automation with the same URL and header for **Workouts**:
 format `JSON`, export version `2`, *Include Workout Metrics* on, *Include
 Route Data* off, time grouping `Minutes`, date range `Default`.
+
+Optionally add a third automation for **Health Metrics** with only *Sleep
+Analysis* selected, format `JSON`, export version `2`, time grouping `Days`,
+date range `Default`: the CSV export only has sleep durations, the JSON one
+also says when each night began and ended (`bedtime` / `wake_time` in
+`get_daily_sleep`).
 
 Tap **Run Now** once to push your historical data. The first run can be a few
 MB and may take a few seconds.

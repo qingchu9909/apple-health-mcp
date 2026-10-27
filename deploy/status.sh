@@ -60,3 +60,10 @@ if ((${#workouts[@]})); then
 else
   echo "运动记录：还没有"
 fi
+# One file per night, named by the morning it ended on.
+nights=("$BASE"/sleep/*.json)
+if ((${#nights[@]})); then
+  echo "入睡/起床时间：${#nights[@]} 晚（$(basename "${nights[0]}" .json) 到 $(basename "${nights[-1]}" .json)）"
+else
+  echo "入睡/起床时间：还没有（要第三个自动化，见设定文档）"
+fi

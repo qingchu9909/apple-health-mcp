@@ -74,6 +74,18 @@ curl -fsSL https://raw.githubusercontent.com/qingchu9909/apple-health-mcp/main/d
 | Date Range | Default |
 | Sync Cadence | 每 1 小时 |
 
+**自动化三：入睡和起床时间**（可选。CSV 里只有睡眠时长，几点睡、几点醒只在 JSON 格式里有）
+
+| 项目 | 选择 |
+| --- | --- |
+| Data Type | Health Metrics |
+| Select Health Metrics | 只勾 Sleep Analysis |
+| Export Format | JSON |
+| Export Version | Version 2 |
+| Time Grouping | Days |
+| Date Range | Default |
+| Sync Cadence | 每 1 小时 |
+
 建好后：
 
 1. 在每个自动化的设置页点 **Manual Export**，选一个较长的时间段（比如近 3 个月）导一次历史数据，这样一开始就有基线可比。

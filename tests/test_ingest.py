@@ -15,6 +15,7 @@ def _load(tmp_path: Path, monkeypatch, token: str = TEST_TOKEN):
     monkeypatch.setenv("HEALTH_TOKEN", token)
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("WORKOUTS_DIR", str(tmp_path / "workouts"))
+    monkeypatch.setenv("SLEEP_DIR", str(tmp_path / "sleep"))
     spec = importlib.util.spec_from_file_location("ingest_main", REPO_ROOT / "ingest" / "main.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -118,6 +119,34 @@ def test_empty_workout_export_is_accepted(tmp_path: Path, monkeypatch):
     response = client.post("/ingest", json={"data": {"workouts": []}}, headers=AUTH)
     assert response.status_code == 200
     assert response.json()["status"] == "empty"
+
+
+def test_json_sleep_nights_are_stored_by_the_morning_they_ended_on(tmp_path: Path, monkeypatch, capsys):
+    _, client = _load(tmp_path, monkeypatch)
+    payload = {
+        "data": {
+            "metrics": [
+                {"name": "sleep_analysis", "units": "hr", "data": [
+                    {"date": "2026-10-27", "sleepStart": "2026-10-26 23:12:00 +0800",
+                     "sleepEnd": "2026-10-27 06:50:00 +0800", "totalSleep": 7.2},
+                    {"date": "2026-10-26 00:00:00 +0800", "sleepEnd": "2026-10-26 07:01:00 +0800", "totalSleep": 6.9},
+                    {"totalSleep": 1},  # no date at all
+                ]},
+                {"name": "step_count", "units": "count", "data": [{"date": "2026-10-27 08:00:00 +0800", "qty": 100}]},
+            ]
+        }
+    }
+    response = client.post("/ingest", json=payload, headers=AUTH)
+    assert response.json() == {"status": "saved", "workouts": 0, "nights": 2}
+    stored = {p.name: json.loads(p.read_text()) for p in (tmp_path / "sleep").glob("*.json")}
+    assert set(stored) == {"2026-10-27.json", "2026-10-26.json"}
+    assert stored["2026-10-27.json"]["sleepStart"] == "2026-10-26 23:12:00 +0800"
+    # Other JSON metrics are ignored, with a log line naming them.
+    assert "step_count" in capsys.readouterr().out
+
+    # Re-sending the same nights overwrites instead of duplicating.
+    client.post("/ingest", json=payload, headers=AUTH)
+    assert len(list((tmp_path / "sleep").glob("*.json"))) == 2
 
 
 def test_json_health_metrics_are_rejected_with_a_hint(tmp_path: Path, monkeypatch):

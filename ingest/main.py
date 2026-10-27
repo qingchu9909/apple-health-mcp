@@ -6,6 +6,9 @@ Two automations post to the same /ingest URL:
   and write the inner CSV to DATA_DIR.
 - Workouts as JSON (export version 2). Each workout is written to
   WORKOUTS_DIR/<id>.json, so re-sent workouts overwrite instead of duplicating.
+- Optionally Sleep Analysis as JSON: the CSV only has durations, the JSON
+  also says when each night began and ended. Each night is written to
+  SLEEP_DIR/<date it ended on>.json.
 """
 import hashlib
 import hmac
@@ -28,6 +31,8 @@ DATA_DIR = pathlib.Path(os.getenv("DATA_DIR", "/opt/health/data"))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 WORKOUTS_DIR = pathlib.Path(os.getenv("WORKOUTS_DIR", "/opt/health/workouts"))
 WORKOUTS_DIR.mkdir(parents=True, exist_ok=True)
+SLEEP_DIR = pathlib.Path(os.getenv("SLEEP_DIR", "/opt/health/sleep"))
+SLEEP_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI()
 
@@ -117,15 +122,46 @@ def _workout_filename(workout: dict) -> str:
     return f"{workout_id}.json"
 
 
-def save_workouts(payload) -> dict:
+_DATE_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
+
+
+def _night_filename(night: dict) -> str | None:
+    """A night is filed under the morning it ended on, like the CSV rows."""
+    for key in ("sleepEnd", "inBedEnd", "date"):
+        match = _DATE_PREFIX_RE.match(str(night.get(key) or ""))
+        if match:
+            return f"{match.group()}.json"
+    return None
+
+
+def save_sleep(metrics: list) -> int:
+    """Store each night of a JSON sleep_analysis metric; other metrics are ignored."""
+    nights, ignored = 0, []
+    for metric in metrics:
+        if not isinstance(metric, dict):
+            continue
+        if metric.get("name") != "sleep_analysis":
+            ignored.append(str(metric.get("name")))
+            continue
+        for night in metric.get("data") or []:
+            if isinstance(night, dict) and (name := _night_filename(night)):
+                _write_atomic(SLEEP_DIR / name, json.dumps(night, ensure_ascii=False).encode("utf-8"))
+                nights += 1
+    if ignored:
+        print(f"[ingest] ignoring JSON metrics (send them as CSV): {', '.join(ignored)}", flush=True)
+    return nights
+
+
+def save_json(payload) -> dict:
     data = payload.get("data", payload) if isinstance(payload, dict) else None
     if not isinstance(data, dict):
         raise HTTPException(status_code=400, detail="Expected a Health Auto Export JSON payload")
     workouts = data.get("workouts") or []
-    if not workouts and data.get("metrics"):
+    nights = save_sleep(data.get("metrics") or [])
+    if not workouts and not nights and data.get("metrics"):
         raise HTTPException(
             status_code=422,
-            detail="Send Health Metrics as CSV; JSON is only accepted for the Workouts automation.",
+            detail="Send Health Metrics as CSV; JSON is only read for Workouts and for Sleep Analysis.",
         )
     saved = []
     for workout in workouts:
@@ -136,7 +172,10 @@ def save_workouts(payload) -> dict:
         dest = WORKOUTS_DIR / _workout_filename(workout)
         _write_atomic(dest, json.dumps(workout, ensure_ascii=False).encode("utf-8"))
         saved.append(dest.name)
-    return {"status": "saved" if saved else "empty", "workouts": len(saved)}
+    result = {"status": "saved" if saved or nights else "empty", "workouts": len(saved)}
+    if nights:
+        result["nights"] = nights
+    return result
 
 
 @app.post("/ingest")
@@ -151,7 +190,7 @@ async def ingest(request: Request, authorization: str | None = Header(None)):
             payload = json.loads(body)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid JSON") from exc
-        return save_workouts(payload)
+        return save_json(payload)
 
     csv_data = extract_csv(body)
     if not csv_data.strip():
