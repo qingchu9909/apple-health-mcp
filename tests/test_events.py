@@ -29,12 +29,16 @@ def test_get_ecg_lists_recent_recordings(tmp_data_dir: Path, monkeypatch):
     ecg_dir = Path(server.ECG_DIR)
     _write(ecg_dir, "a", {"start": _stamp(start), "classification": "Sinus Rhythm", "averageHeartRate": 62.4})
     _write(ecg_dir, "b", {"start": _stamp(start - timedelta(days=200)), "classification": "Inconclusive"})
+    _write(ecg_dir, "d", {"start": _stamp(start - timedelta(minutes=1)), "classification": "Inconclusive Poor Recording",
+                          "averageHeartRate": 0})
     _write(ecg_dir, "c", {"start": _stamp(start + timedelta(hours=1)), "classification": "Atrial Fibrillation",
                           "averageHeartRate": {"qty": 96, "units": "bpm"}, "severity": "Moderate"})
 
     result = json.loads(server.get_ecg(days=90))
-    assert result["days_returned"] == 2
-    first, second = result["records"]
+    assert result["days_returned"] == 3
+    poor, first, second = result["records"]
+    assert poor == {"start": (start - timedelta(minutes=1)).strftime("%Y-%m-%d %H:%M"),
+                    "classification": "Inconclusive Poor Recording"}
     assert first == {"start": start.strftime("%Y-%m-%d %H:%M"), "classification": "Sinus Rhythm", "average_hr": 62.4}
     assert second["classification"] == "Atrial Fibrillation"
     assert second["average_hr"] == 96.0

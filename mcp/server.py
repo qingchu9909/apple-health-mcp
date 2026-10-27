@@ -972,7 +972,8 @@ def get_ecg(days: int = 90) -> str:
         if start < cutoff:
             continue
         rec = {"start": start.strftime("%Y-%m-%d %H:%M"), "classification": ecg.get("classification")}
-        if (hr := _quantity(ecg.get("averageHeartRate"))) is not None:
+        # A poor recording comes with an average of 0.
+        if (hr := _quantity(ecg.get("averageHeartRate"))) is not None and hr["value"] > 0:
             rec["average_hr"] = hr["value"]
         if ecg.get("severity"):
             rec["severity"] = ecg["severity"]
