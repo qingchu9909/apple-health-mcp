@@ -479,12 +479,14 @@ def get_metric(metric: str, days: int = 30) -> str:
     """Get a specific health metric over a date range.
 
     ``metric`` is a name from list_metrics: a column such as "Step Count
-    (count)", or "ecg", "heart_rate_notifications" or "state_of_mind" (logged
-    moods). Returns at most the 500 most recent rows; narrow ``days`` for
-    older data.
+    (count)", or "ecg", "heart_rate_notifications", "state_of_mind" (logged
+    moods) or "sleep_times" (bedtime and wake time). Returns at most the 500
+    most recent rows; narrow ``days`` for older data.
     """
     if (name := _event_metric(metric)) is not None:
         return _EVENT_METRICS[name][2](days=days)
+    if _metric_key(metric) in _SLEEP_TIME_NAMES:
+        return get_daily_sleep(days=days)
     df = load_all_csv()
     if df.empty:
         return _no_data()
@@ -526,12 +528,14 @@ def get_summary(days: int = 7) -> str:
         starts = [start for start, _ in _load_events(directory) if start >= cutoff]
         if starts:
             out.append(f"{label}: {len(starts)}, latest {starts[-1]:%Y-%m-%d %H:%M} (details: get_metric(\"{name}\"))")
+    if times := _sleep_time_lines(days):
+        out.append(f"Latest night {times[-1]}")
     return "\n".join(out)
 
 
 @mcp.tool()
 def get_sleep(days: int = 14) -> str:
-    """Get sleep analysis for the past N days."""
+    """Get sleep analysis for the past N days, then each night's bedtime and wake time."""
     df = load_all_csv()
     if df.empty:
         return _no_data()
@@ -540,7 +544,10 @@ def get_sleep(days: int = 14) -> str:
     recent = df[df["Date/Time"] >= cutoff][["Date/Time"] + sleep_cols].dropna(
         subset=sleep_cols, how="all"
     )
-    return recent.to_string(index=False)
+    out = recent.to_string(index=False)
+    if times := _sleep_time_lines(days):
+        out += "\n\nBedtime and wake time per night (dated by the morning it ended):\n" + "\n".join(times)
+    return out
 
 
 @mcp.tool()
@@ -1080,8 +1087,18 @@ _EVENT_ALIASES = {
 }
 
 
+_SLEEP_TIME_NAMES = {
+    "sleep_times", "sleep_time", "bedtime", "bedtimes", "wake_time", "wake_times",
+    "入睡时间", "起床时间", "入睡時間", "起床時間",
+}
+
+
+def _metric_key(name: str) -> str:
+    return re.sub(r"[\s-]+", "_", str(name).strip().lower())
+
+
 def _event_metric(name: str) -> str | None:
-    key = re.sub(r"[\s-]+", "_", str(name).strip().lower())
+    key = _metric_key(name)
     key = _EVENT_ALIASES.get(key, key)
     return key if key in _EVENT_METRICS else None
 
@@ -1092,6 +1109,9 @@ def _event_metric_lines() -> list[str]:
         events = _load_events(directory)
         latest = f", latest {events[-1][0]:%Y-%m-%d %H:%M}" if events else ""
         lines.append(f"{name} ({label}): {len(events)}{latest}")
+    nights = [date for date, fields in sorted(_load_sleep_times().items()) if "bedtime" in fields or "wake_time" in fields]
+    latest = f", latest {nights[-1]}" if nights else ""
+    lines.append(f"sleep_times (nights with bedtime and wake time, also in get_daily_sleep): {len(nights)}{latest}")
     return lines
 
 
@@ -1167,6 +1187,16 @@ def _with_sleep_times(records: list[dict], days: int) -> list[dict]:
             if rec.get(key) is None:  # the CSV value wins where both have one
                 rec[key] = value
     return [by_date[date] for date in sorted(by_date)]
+
+
+def _sleep_time_lines(days: int) -> list[str]:
+    """"<date>: bedtime ..., wake time ..." for each night in the window."""
+    cutoff = _now() - timedelta(days=days)
+    return [
+        f"{date}: bedtime {fields.get('bedtime', 'unknown')}, wake time {fields.get('wake_time', 'unknown')}"
+        for date, fields in sorted(_load_sleep_times().items())
+        if datetime.fromisoformat(date) >= cutoff and ("bedtime" in fields or "wake_time" in fields)
+    ]
 
 
 # --- HTTP API for the scheduled report routine --------------------------------

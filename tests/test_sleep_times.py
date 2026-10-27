@@ -64,3 +64,22 @@ def test_without_sleep_uploads_nothing_changes(tmp_data_dir: Path):
     server = _import_server(tmp_data_dir)
     assert json.loads(server.get_daily_sleep(days=14)) == {"records": [], "days_requested": 14, "days_returned": 0}
     assert server._freshness()["latest_sleep_night"] is None
+
+
+def test_older_tools_also_give_bedtime_and_wake_time(tmp_data_dir: Path, monkeypatch):
+    # A chat whose tool list predates the bedtime fields of get_daily_sleep
+    # still finds them through list_metrics, get_metric, get_sleep and get_summary.
+    monkeypatch.setenv("USER_TZ", "Asia/Shanghai")
+    server = _import_server(tmp_data_dir)
+    monkeypatch.setattr(server, "_now", lambda: datetime(2026, 10, 27, 11, 10))
+    (tmp_data_dir / "health_1.csv").write_text("Date/Time,Sleep Analysis [Total] (hr)\n2026-10-26 00:00:00,7.65\n")
+    _write_night(server, "2026-10-26", sleepStart="2026-10-25 23:30:00 +0800", sleepEnd="2026-10-26 07:09:00 +0800")
+
+    listing = server.list_metrics()
+    assert "sleep_times (nights with bedtime and wake time, also in get_daily_sleep): 1, latest 2026-10-26" in listing
+    for name in ("sleep_times", "Bedtime", "起床时间"):
+        record = json.loads(server.get_metric(name, days=7))["records"][0]
+        assert (record["bedtime"], record["wake_time"]) == ("2026-10-25 23:30", "2026-10-26 07:09")
+    line = "2026-10-26: bedtime 2026-10-25 23:30, wake time 2026-10-26 07:09"
+    assert line in server.get_sleep(days=7)
+    assert f"Latest night {line}" in server.get_summary(days=7)
