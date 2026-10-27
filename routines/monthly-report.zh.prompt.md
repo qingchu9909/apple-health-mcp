@@ -30,7 +30,7 @@ curl -fsS --retry 3 --retry-delay 10 --max-time 60 \
 
 返回 `{"due": true 或 false, "reason": "...", ...}`。
 
-- `due` 是 false（这个月的月报已经发过了）：只输出一行「这次不用写：{reason}」，然后结束。不要取数据，不要写月报，不要发送任何东西。
+- `due` 是 false（这个月的月报已经发过了）：这次不用写。不要取数据、不要写月报，也不要给用户回复任何消息（连「这次不用写」也不要说），直接结束。
 - `due` 是 true：继续。
 - 任何时候都不要把 `HEALTH_API_TOKEN` 的值打印出来或写进月报。
 - 请求连续失败（403 多半是云端环境没放行这个域名，401 是令牌不对，超时是服务器不通）：停止，在输出里写清楚失败原因和 HTTP 状态码，不要编造月报。
@@ -56,7 +56,7 @@ mkdir -p /tmp/health && curl -fsS --retry 3 --retry-delay 10 --max-time 120 \
 - `workouts.records[]`：每次运动一条：`name`（类型，英文）、`start/end`、`duration_min`、`distance`、`active_energy`、`hr_avg/hr_max`、`elevation_up` 等，数值是 `{"value", "unit"}`
 - `ecg.records[]`：手表「心电图」App 量的每一次：`start`、`classification`（Sinus Rhythm 窦性心律 / Atrial Fibrillation 房颤 / Inconclusive 无法判断 / Poor Recording 记录不良等）、`average_hr`
 - `heart_rate_notifications.records[]`：手表弹出的心率提醒：`kind`（high 过高 / low 过低 / irregular_rhythm 心律不齐）、`start`/`end`、`threshold_bpm`、`hr_min`/`hr_avg`/`hr_max`
-- `state_of_mind.records[]`：用户自己记下的心情（手表不会自动测）：`time`、`kind`（daily_mood 整天心情 / momentary_emotion 某一刻的情绪）、`valence`（-1 很不愉快到 1 很愉快）、`feeling`、`labels`（感受，如 drained 疲惫、anxious 焦虑）、`associations`（跟什么有关，如 work 工作、family 家人、hobbies 嗜好）
+- `state_of_mind.records[]`：用户自己记下的心情（手表不会自动测）：`time`、`kind`（daily_mood 整天心情 / momentary_emotion 某一刻的情绪）、`valence`（-1 很不愉快到 1 很愉快）、`feeling`、`labels`（感受，如 drained 疲惫、anxious 焦虑）、`associations`（跟什么有关，如 work 工作、family 家人、hobbies 爱好）
 - `other_metrics`：上面没覆盖、但近 7 天有数据的其他指标，`{指标名: {日期: 当天值}}`，例如日照时间、环境噪音、潜水深度、水温
 - `alerts_sent[]`：服务器已经推送过的异常提醒：`time`、`title`、`text`
 - `reports_today`：今天已经发过的报告 `{kind: 内容}`；`latest_weekly`、`latest_monthly`：最近一份周报、月报（`{date, content}`，没有则为 null）
@@ -156,7 +156,8 @@ curl -sS --retry 2 --max-time 120 -w '\nHTTP %{http_code}\n' \
 ```
 
 - 返回 HTTP 200 且 `push` 里每个渠道都是 `"ok"` 才算完成。
-- HTTP 409：这个月的月报已经发过了，不要再发，直接结束。
+- 发送成功后，最后只回复一行「月报已发送」：用户已经在手机上收到全文，不要再复述。
+- HTTP 409：这个月的月报已经发过了，不要再发，也不要回复，直接结束。
 - 某个渠道失败时，把它的错误信息原样写进你最后的输出。不要重复发送已经成功的月报。
 
 ## 运动类型的中文名
@@ -179,7 +180,7 @@ Cycling / Outdoor Cycling 骑行，Indoor Cycling 室内单车，Walk / Outdoor 
 
 ## 已知数据坑
 
-1. `Sleep Analysis [Asleep]` 永远是 0（iOS 16 起苹果改用分期数据）。只用 Total / Core / Deep / REM / Awake，绝不报告 Asleep。
+1. `asleep_h`（Sleep Analysis [Asleep]）多半是 0（iOS 16 起苹果改用分期数据），偶尔有值时已经算在 `total_h` 里。只用 Total / Core / Deep / REM / Awake，不要单独报告 Asleep。
 2. VO2max、步行平均心率更新稀疏，几天没有是正常的，需要时提一句就够了。
 3. 体重、营养、血压等如果整个时间窗都没有数据，就当用户没在记录，不要单列章节，也不要说「缺失」。
 4. 血氧单晚偏低、血糖单个读数偏低（压到传感器的假性低血糖），都不单独标记。

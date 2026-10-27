@@ -32,7 +32,7 @@ curl -fsS --retry 3 --retry-delay 10 --max-time 60 \
 
 返回 `{"due": true 或 false, "reason": "...", "night_ready": true 或 false, ...}`。
 
-- `due` 是 false：只输出一行「这次不用写：{reason}」，然后结束。不要取数据，不要写早报，不要发送任何东西。
+- `due` 是 false：这次不用写。不要取数据、不要写早报，也不要给用户回复任何消息（连「这次不用写」也不要说），直接结束。
 - `due` 是 true：继续。如果 `night_ready` 是 false，说明已经到了最后一次运行，昨晚的睡眠还是没传上来，照样写，但按第 3 步加提醒。
 - 任何时候都不要把 `HEALTH_API_TOKEN` 的值打印出来或写进早报。
 - 请求连续失败（403 多半是云端环境没放行这个域名，401 是令牌不对，超时是服务器不通）：停止，在输出里写清楚失败原因和 HTTP 状态码，不要编造早报。
@@ -58,7 +58,7 @@ mkdir -p /tmp/health && curl -fsS --retry 3 --retry-delay 10 --max-time 120 \
 - `workouts.records[]`：每次运动一条：`name`（类型，英文）、`start/end`、`duration_min`、`distance`、`active_energy`、`hr_avg/hr_max`、`elevation_up` 等，数值是 `{"value", "unit"}`
 - `ecg.records[]`：手表「心电图」App 量的每一次：`start`、`classification`（Sinus Rhythm 窦性心律 / Atrial Fibrillation 房颤 / Inconclusive 无法判断 / Poor Recording 记录不良等）、`average_hr`
 - `heart_rate_notifications.records[]`：手表弹出的心率提醒：`kind`（high 过高 / low 过低 / irregular_rhythm 心律不齐）、`start`/`end`、`threshold_bpm`、`hr_min`/`hr_avg`/`hr_max`
-- `state_of_mind.records[]`：用户自己记下的心情（手表不会自动测）：`time`、`kind`（daily_mood 整天心情 / momentary_emotion 某一刻的情绪）、`valence`（-1 很不愉快到 1 很愉快）、`feeling`、`labels`（感受，如 drained 疲惫、anxious 焦虑）、`associations`（跟什么有关，如 work 工作、family 家人、hobbies 嗜好）
+- `state_of_mind.records[]`：用户自己记下的心情（手表不会自动测）：`time`、`kind`（daily_mood 整天心情 / momentary_emotion 某一刻的情绪）、`valence`（-1 很不愉快到 1 很愉快）、`feeling`、`labels`（感受，如 drained 疲惫、anxious 焦虑）、`associations`（跟什么有关，如 work 工作、family 家人、hobbies 爱好）
 - `other_metrics`：上面没覆盖、但近 7 天有数据的其他指标，`{指标名: {日期: 当天值}}`，例如日照时间、环境噪音、潜水深度、水温
 - `alerts_sent[]`：服务器已经推送过的异常提醒：`time`、`title`、`text`
 - `reports_today`：今天已经发过的报告 `{kind: 内容}`；`latest_weekly`、`latest_monthly`：最近一份周报、月报（`{date, content}`，没有则为 null）
@@ -99,7 +99,7 @@ mkdir -p /tmp/health && curl -fsS --retry 3 --retry-delay 10 --max-time 120 \
 - **心率提醒**：近 2 天有 high 或 low → 黄；有 irregular_rhythm → 红。
 - **心电图**：近 7 天有 Atrial Fibrillation → 红，建议带着这次记录找医生看。Inconclusive、Poor Recording 不标色，只在备注提一句可以重量一次。
 
-**今天状态**直接用 `readiness.summary`，这样早报、异常提醒和 Claude 对话说法一致。你可以在建议里补充，但不要推翻它；如果你认为它明显不对（例如数据缺失），照用它，并在备注里说明你的看法。不要编 0–100 的分数。
+**今天状态**直接用 `readiness.summary`，这样早报、异常提醒和 Claude 对话说法一致。你可以在建议里补充，但不要推翻它；如果你认为它明显不对（例如数据缺失），照用它，并在备注里说明你的看法。「今天怎么安排」的强度要和 `readiness.level` 一致（normal 就安排中等强度）：昨天练得特别多、或者用户记了疲惫，可以在第 2 条提醒别加量，但不要把整体安排换成另一个等级。不要编 0–100 的分数。
 
 ## 第 6 步：写早报
 
@@ -147,7 +147,8 @@ curl -sS --retry 2 --max-time 120 -w '\nHTTP %{http_code}\n' \
 ```
 
 - 返回 HTTP 200 且 `push` 里每个渠道都是 `"ok"` 才算完成。
-- HTTP 409：今天的早报已经发过了（另一次运行抢先了），不要再发，直接结束。
+- 发送成功后，最后只回复一行「早报已发送」：用户已经在手机上收到全文，不要再复述。
+- HTTP 409：今天的早报已经发过了（另一次运行抢先了），不要再发，也不要回复，直接结束。
 - 某个渠道失败时，把它的错误信息原样写进你最后的输出。不要重复发送已经成功的早报。
 
 ## 运动类型的中文名
@@ -170,7 +171,7 @@ Cycling / Outdoor Cycling 骑行，Indoor Cycling 室内单车，Walk / Outdoor 
 
 ## 已知数据坑
 
-1. `Sleep Analysis [Asleep]` 永远是 0（iOS 16 起苹果改用分期数据）。只用 Total / Core / Deep / REM / Awake，绝不报告 Asleep。
+1. `asleep_h`（Sleep Analysis [Asleep]）多半是 0（iOS 16 起苹果改用分期数据），偶尔有值时已经算在 `total_h` 里。只用 Total / Core / Deep / REM / Awake，不要单独报告 Asleep。
 2. VO2max、步行平均心率更新稀疏，几天没有是正常的，只在备注里提一句。
 3. 体重、营养、血压等如果整个时间窗都没有数据，就当用户没在记录，不要单列章节，也不要说「缺失」。
 4. 血氧单晚偏低、血糖单个读数偏低（压到传感器的假性低血糖），都不单独标记。
