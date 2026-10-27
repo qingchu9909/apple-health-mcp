@@ -1104,10 +1104,10 @@ def _with_sleep_times(records: list[dict], days: int) -> list[dict]:
     nights = _load_sleep_times()
     if not nights:
         return records
-    cutoff = (_now() - timedelta(days=days)).date().isoformat()
+    cutoff = _now() - timedelta(days=days)
     by_date = {rec["date"]: rec for rec in records}
     for date, fields in nights.items():
-        if date < cutoff:
+        if datetime.fromisoformat(date) < cutoff:  # the window of the CSV rows, stamped at midnight
             continue
         rec = by_date.setdefault(date, {"date": date})
         for key, value in fields.items():

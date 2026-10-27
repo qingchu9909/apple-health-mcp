@@ -1,6 +1,6 @@
 """Tests for bedtime / wake time from the JSON sleep automation (SLEEP_DIR)."""
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from .conftest import _import_server
@@ -45,6 +45,19 @@ def test_sleep_times_join_the_csv_record_of_the_same_morning(tmp_data_dir: Path,
     assert second == {"date": str(today), "bedtime": f"{yesterday} 23:40", "wake_time": f"{today} 07:05", "total_h": 6.9}
     assert result["days_returned"] == 2
     assert server._freshness()["latest_sleep_night"] == str(today)
+
+
+def test_sleep_times_keep_to_the_days_of_the_csv_records(tmp_data_dir: Path, monkeypatch):
+    server = _import_server(tmp_data_dir)
+    monkeypatch.setattr(server, "_now", lambda: datetime(2026, 10, 27, 11, 10))
+    (tmp_data_dir / "health_1.csv").write_text(
+        "Date/Time,Sleep Analysis [Total] (hr)\n2026-10-20 00:00:00,6.97\n2026-10-21 00:00:00,6.86\n"
+    )
+    _write_night(server, "2026-10-20", sleepEnd="2026-10-20 07:37:00 +0800")
+    _write_night(server, "2026-10-21", sleepEnd="2026-10-21 07:37:00 +0800")
+
+    result = json.loads(server.get_daily_sleep(days=7))
+    assert [rec["date"] for rec in result["records"]] == ["2026-10-21"]
 
 
 def test_without_sleep_uploads_nothing_changes(tmp_data_dir: Path):
