@@ -15,6 +15,14 @@ uploads=$(journalctl -u health-ingest -n 5000 --no-pager -o short-iso 2>/dev/nul
     -e 's/^([0-9-]+)T([0-9:]+).*" 401 Unauthorized$/\1 \2  ✘ 密码不对/' \
     -e 's/^([0-9-]+)T([0-9:]+).*" ([0-9]{3}) (.*)$/\1 \2  ✘ 出错 \3 \4/')
 echo "${uploads:-还没有收到过上传}"
+# Older refusals stay in the list above, so say plainly how the newest went.
+last=$(grep -E ' (✔|✘) ' <<<"$uploads" | tail -n 1)
+when=$(awk '{print $1, $2}' <<<"$last")
+if [[ $last == *✔* ]]; then
+  echo "→ 现在正常：最新一次上传（$when）成功，更早的 ✘ 不用管"
+elif [[ -n $last ]]; then
+  echo "→ 最新一次上传（$when）没成功，原因见上"
+fi
 
 echo
 echo "== 已收到的数据 =="
