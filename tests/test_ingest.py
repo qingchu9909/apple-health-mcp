@@ -145,8 +145,8 @@ def test_json_sleep_nights_are_stored_by_the_morning_they_ended_on(tmp_path: Pat
     stored = {p.name: json.loads(p.read_text()) for p in (tmp_path / "sleep").glob("*.json")}
     assert set(stored) == {"2026-10-27.json", "2026-10-26.json"}
     assert stored["2026-10-27.json"]["sleepStart"] == "2026-10-26 23:12:00 +0800"
-    # Other JSON metrics are ignored, with a log line naming them.
-    assert "step_count" in capsys.readouterr().out
+    # Other JSON metrics are ignored without a word, since nights were found.
+    assert "step_count" not in capsys.readouterr().out
 
     # Re-sending the same nights overwrites instead of duplicating.
     client.post("/ingest", json=payload, headers=AUTH)
