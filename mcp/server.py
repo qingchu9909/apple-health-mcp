@@ -137,7 +137,26 @@ _UNIT_ALIASES = {
 }
 
 
+# Newer Health Auto Export versions spell some units differently
+# ("Heart Rate [Avg] (bpm)", "Step Count (steps)", "(ºC)"). Same values,
+# so they are only renamed.
+_UNIT_SPELLINGS = {
+    "(bpm)": "(count/min)",
+    "(steps)": "(count)",
+    "(ºC)": "(degC)",
+    "(°C)": "(degC)",
+    "(ºF)": "(degF)",
+    "(°F)": "(degF)",
+}
+
+
 def _normalize_units(df: pd.DataFrame) -> pd.DataFrame:
+    for col in list(df.columns):
+        name, _, unit = str(col).rpartition(" ")
+        if unit in _UNIT_SPELLINGS:
+            canonical = f"{name} {_UNIT_SPELLINGS[unit]}"
+            df[canonical] = df[canonical].fillna(df[col]) if canonical in df.columns else df[col]
+            df = df.drop(columns=[col])
     for canonical, (alias, convert) in _UNIT_ALIASES.items():
         if alias not in df.columns:
             continue

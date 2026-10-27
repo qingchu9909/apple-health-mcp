@@ -93,6 +93,23 @@ def test_imperial_and_kcal_columns_are_converted(tmp_data_dir: Path):
     assert "Active Energy (kcal)" not in row.index
 
 
+def test_newer_unit_spellings_are_read_as_the_usual_columns(tmp_data_dir: Path):
+    (tmp_data_dir / "health_units.csv").write_text(
+        "Date/Time,Step Count (steps),Heart Rate [Avg] (bpm),Resting Heart Rate (bpm),"
+        "Apple Sleeping Wrist Temperature (ºC),Body Temperature (°F)\n"
+        "2026-04-01 00:00:00,5000,72,55,36.4,98.6\n"
+    )
+    server = _import_server(tmp_data_dir)
+    row = server.load_all_csv().iloc[0]
+
+    assert row["Step Count (count)"] == 5000
+    assert row["Heart Rate [Avg] (count/min)"] == 72
+    assert row["Resting Heart Rate (count/min)"] == 55
+    assert row["Apple Sleeping Wrist Temperature (degC)"] == 36.4
+    assert row["Body Temperature (degF)"] == 98.6
+    assert "Step Count (steps)" not in row.index
+
+
 def test_unit_switch_between_exports_keeps_one_series(tmp_data_dir: Path):
     (tmp_data_dir / "health_1.csv").write_text("Date/Time,Active Energy (kJ)\n2026-04-01 00:00:00,1000\n")
     (tmp_data_dir / "health_2.csv").write_text("Date/Time,Active Energy (kcal)\n2026-04-02 00:00:00,100\n")
