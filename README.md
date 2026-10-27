@@ -23,11 +23,13 @@ Apple Health data — without uploading anything to a third-party service.
 
 > **About this fork.** It adds a one-command installer (`deploy/install.sh`,
 > one domain, Caddy or Nginx, including Nginx in Docker, systemd), workouts, push notifications
-> (Telegram, Server酱, PushPlus), an HTTPS API that Claude's scheduled cloud
-> routines can use for a daily report, time-zone handling, separate tokens
+> (Telegram, Server酱, PushPlus), alerts the server pushes on its own when
+> the data departs from your own baselines, an HTTPS API that Claude's
+> scheduled cloud routines use for morning, evening, weekly and monthly
+> reports, time-zone handling, separate tokens
 > for upload / connector / report API, and fixes for duplicate exports and
 > unauthenticated uploads. Chinese setup guide: [docs/SETUP.zh.md](docs/SETUP.zh.md);
-> Chinese daily-report routine: [routines/daily-report.zh.prompt.md](routines/daily-report.zh.prompt.md).
+> Chinese report routines: [routines/](routines/).
 
 ---
 
@@ -43,7 +45,7 @@ message to your phone, and six raw tools remain as the escape hatch.
 | --- | --- | --- |
 | `get_daily_sleep` | Sleep stages + wrist temperature, one record per night; bedtime and wake time when the sleep automation is set up. | 14 days |
 | `get_daily_fitness` | Steps, distance, energy, exercise/stand time, flights, walking speed, walking HR, VO2 max — aggregated per day. | 14 days |
-| `get_daily_vitals` | Heart-rate min/max/avg, resting HR, HRV, respiratory rate, blood-oxygen — aggregated per day — plus an overnight CGM glucose profile (mean/min/max, % time in 3.9–7.8 mmol/L, sample count over 22:00–08:00, keyed to the wake date). | 14 days |
+| `get_daily_vitals` | Heart-rate min/max/avg, resting HR, HRV, respiratory rate, blood-oxygen — aggregated per day — plus the night's HRV, respiratory rate and blood oxygen (readings between bedtime and wake time, keyed to the wake date) and an overnight CGM glucose profile (mean/min/max, % time in 3.9–7.8 mmol/L, sample count over 22:00–08:00). | 14 days |
 | `get_baselines` | p10/p50/p90 + yesterday + 7d-vs-30d trend for every headline metric. | 30 days |
 
 **Workouts, ECG, heart rate notifications and logged moods** (JSON automations):
@@ -62,12 +64,12 @@ message to your phone, and six raw tools remain as the escape hatch.
 | --- | --- |
 | `send_message` | Sends a message to every configured channel (Telegram, Server酱, PushPlus). |
 
-**Daily HEALTH REPORT (read/write):**
+**HEALTH REPORTS (read/write):**
 
 | Tool | Description |
 | --- | --- |
-| `save_health_report` | Persist a markdown report at `<REPORTS_DIR>/<YYYY-MM-DD>.md`. Used by the scheduled report-generation routine. |
-| `get_health_report` | Read a report by date, or — with no `date` arg — the most recent report within `max_age_days`. The Fitness Coach Agent uses this to fetch each morning's briefing. |
+| `save_health_report` | Persist a markdown report at `<REPORTS_DIR>/<YYYY-MM-DD>-<kind>.md`, `kind` being `morning`, `evening`, `weekly` or `monthly` (`<YYYY-MM-DD>.md` without one). Used by the scheduled report routines. |
+| `get_health_report` | Every report of a date, or — with no `date` arg — of the most recent day within `max_age_days`, plus the newest weekly and monthly summaries, so a fresh chat gets the long view in one call. |
 
 See [`routines/README.md`](routines/README.md) for how to set up the
 scheduled remote agent that calls `save_health_report` every morning.
@@ -78,8 +80,8 @@ scheduled remote agent that calls `save_health_report` every morning.
 | --- | --- | --- |
 | `list_metrics` | Lists every health metric with at least one data point, then how many ECG recordings, heart rate notifications, logged moods and nights with bedtime / wake time are on record. | n/a |
 | `get_latest` | Most recent non-empty snapshot across all metrics. | n/a |
-| `get_metric` | Time series for a single metric; `ecg`, `heart_rate_notifications`, `state_of_mind` and `sleep_times` return what the dedicated tools return. | 30 days |
-| `get_summary` | avg/min/max/last for the headline metrics. | 7 days |
+| `get_metric` | Time series for a single metric; `ecg`, `heart_rate_notifications`, `state_of_mind` and `sleep_times` return what the dedicated tools return, and `readiness` returns today's readiness (below). | 30 days |
+| `get_summary` | avg/min/max/last for the headline metrics, then today's readiness. | 7 days |
 | `get_sleep` | Raw sleep + wrist-temp rows, then each night's bedtime and wake time. | 14 days |
 | `get_fitness` | Raw fitness + HR rows. | 14 days |
 
@@ -92,14 +94,34 @@ added before `get_ecg`, `get_heart_rate_notifications` and
 fields of `get_daily_sleep`); `list_metrics`, `get_metric`, `get_sleep` and
 `get_summary` lead to the same data.
 
+**Today's readiness** (`get_metric("readiness")`, the last line of
+`get_summary`, and the `readiness` section of `/api/bundle`) weighs last
+night's sleep, the night's HRV and the resting heart rate against your own
+recent values: `good` (train hard), `normal`, `easy` (keep it light), `rest`,
+or `unknown` (no data from last night), with the reasons and an alert for
+anything that clearly departs from your baseline. The rules live in
+[`mcp/butler.py`](mcp/butler.py).
+
+**Alerts.** Every five minutes the MCP server checks the newest uploads and
+pushes, once, anything that clearly departs from your own baselines: night
+HRV well below your recent nights, resting heart rate 7 bpm or more above its
+30-day median, sleeping wrist temperature +0.5 °C, sleeping respiratory rate
++3 breaths/min, blood oxygen under 92 % two nights running, and the watch's
+high / low / irregular heart rate notifications or an AFib ECG. Findings of
+the same pass share one push; nothing goes out in the quiet hours
+(`BUTLER_QUIET_HOURS=23-8`, held until they end). `BUTLER_ALERTS=off` stops
+the pushes. What went out is kept in `BUTLER_DIR/state.json`, and the reports
+see it as `alerts_sent`.
+
 **HTTP API for scheduled routines.** Claude's scheduled cloud routines cannot
-attach a custom connector, so the MCP server also exposes two plain HTTPS
+attach a custom connector, so the MCP server also exposes plain HTTPS
 routes, guarded by `Authorization: Bearer $REPORT_API_TOKEN`:
 
 | Route | Description |
 | --- | --- |
-| `GET /api/bundle?days=14` | Everything a morning briefing needs in one JSON document: freshness, baselines, daily sleep / vitals / fitness, workouts, other metrics, last week's report. |
-| `POST /api/report` | `{"content", "title"?, "date"?, "push"?}` — saves the report like `save_health_report` and pushes it to the configured channels. |
+| `GET /api/report-status?kind=morning` | Whether that report is due now. Each kind is due until it is posted; the morning one also waits for last night's sleep, from the first hour of `MORNING_REPORT_HOURS` (default `8-12`) until the last, when it is due without it. |
+| `GET /api/bundle?days=14` | Everything a report needs in one JSON document: freshness, today's readiness, baselines, daily sleep / vitals / fitness, workouts, ECGs, heart rate notifications, moods, other metrics, the alerts pushed, today's reports, the latest weekly and monthly summaries. |
+| `POST /api/report` | `{"content", "title"?, "date"?, "kind"?, "push"?, "replace"?}` — saves the report like `save_health_report` and pushes it to the configured channels. A second report of the same kind and date answers 409 unless `replace` is true. |
 
 ---
 
@@ -109,6 +131,7 @@ routes, guarded by `Authorization: Bearer $REPORT_API_TOKEN`:
 apple-health-mcp/
 ├── ingest/main.py             FastAPI ingest service (port 8001)
 ├── mcp/server.py              FastMCP MCP server     (port 8002)
+├── mcp/butler.py              Readiness and alert rules (personal baselines)
 ├── mcp/notify.py              Telegram / Server酱 / PushPlus delivery
 ├── requirements.txt           Pinned Python dependencies
 ├── .env.example               Tokens, paths, time zone and push channels

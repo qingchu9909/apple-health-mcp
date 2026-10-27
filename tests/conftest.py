@@ -70,6 +70,7 @@ def _import_server(data_dir: Path):
         ("ECG_DIR", "ecg"),
         ("HR_NOTIFICATIONS_DIR", "hr-notifications"),
         ("STATE_OF_MIND_DIR", "state-of-mind"),
+        ("BUTLER_DIR", "butler"),
     ):
         (data_dir.parent / folder).mkdir(exist_ok=True)
         os.environ[name] = str(data_dir.parent / folder)
