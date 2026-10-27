@@ -162,8 +162,10 @@ def save_sleep(metrics: list) -> int:
             elif name := _night_filename(night):
                 _write_atomic(SLEEP_DIR / name, json.dumps(night, ensure_ascii=False).encode("utf-8"))
                 nights += 1
-    if ignored:
-        print(f"[ingest] ignoring JSON metrics (send them as CSV): {', '.join(ignored)}", flush=True)
+    # The sleep automation may send every metric; only say so when it found no night.
+    if ignored and not nights:
+        more = f" and {len(ignored) - 5} more" if len(ignored) > 5 else ""
+        print(f"[ingest] ignoring JSON metrics (send them as CSV): {', '.join(ignored[:5])}{more}", flush=True)
     if segments:
         print(f"[ingest] ignoring {segments} sleep segments: turn on Summarize Data in the sleep automation", flush=True)
         if not nights:
@@ -204,7 +206,9 @@ def save_json(payload) -> dict:
         "heart_rate_notifications": save_events(data.get("heartRateNotifications"), HR_NOTIFICATIONS_DIR),
         "state_of_mind": save_events(data.get("stateOfMind"), STATE_OF_MIND_DIR),
     }
-    if not workouts and not any(counts.values()) and data.get("metrics"):
+    metrics = data.get("metrics") or []
+    sleep_sent = any(isinstance(m, dict) and m.get("name") == "sleep_analysis" for m in metrics)
+    if not workouts and not any(counts.values()) and metrics and not sleep_sent:
         raise HTTPException(
             status_code=422,
             detail="Send Health Metrics as CSV; JSON is only read for Sleep Analysis, Workouts, "

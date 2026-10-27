@@ -153,6 +153,21 @@ def test_json_sleep_nights_are_stored_by_the_morning_they_ended_on(tmp_path: Pat
     assert len(list((tmp_path / "sleep").glob("*.json"))) == 2
 
 
+def test_the_sleep_automation_may_send_every_metric(tmp_path: Path, monkeypatch, capsys):
+    _, client = _load(tmp_path, monkeypatch)
+    others = [{"name": f"metric_{i}", "units": "count", "data": []} for i in range(8)]
+    night = {"date": "2026-10-27", "sleepEnd": "2026-10-27 06:50:00 +0800", "totalSleep": 7.2}
+    payload = {"data": {"metrics": [*others, {"name": "sleep_analysis", "units": "hr", "data": [night]}]}}
+    assert client.post("/ingest", json=payload, headers=AUTH).json() == {"status": "saved", "workouts": 0, "nights": 1}
+    assert "ignoring" not in capsys.readouterr().out
+
+    # A day without sleep data is not an error either.
+    payload = {"data": {"metrics": [*others, {"name": "sleep_analysis", "units": "hr", "data": []}]}}
+    response = client.post("/ingest", json=payload, headers=AUTH)
+    assert response.status_code == 200
+    assert "metric_0, metric_1, metric_2, metric_3, metric_4 and 3 more" in capsys.readouterr().out
+
+
 def test_sleep_segments_are_ignored_with_a_hint(tmp_path: Path, monkeypatch, capsys):
     _, client = _load(tmp_path, monkeypatch)
     segment = {"startDate": "2026-10-26 23:12:00 +0800", "endDate": "2026-10-26 23:40:00 +0800",
