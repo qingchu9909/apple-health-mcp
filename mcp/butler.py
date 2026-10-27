@@ -112,7 +112,7 @@ def hours_text(hours: float) -> str:
     return f"{h} 小时" if h else f"{m} 分钟"
 
 
-def _when(moment: datetime, now: datetime) -> str:
+def when_text(moment: datetime, now: datetime) -> str:
     if moment.date() == now.date():
         return f"今天 {moment:%H:%M}"
     if moment.date() == now.date() - timedelta(days=1):
@@ -312,7 +312,7 @@ def _event_findings(snap: Snapshot) -> list[Finding]:
         start = _time(note.get("start"))
         if start is None or start < cutoff:
             continue
-        kind, when = note.get("kind"), _when(start, snap.now)
+        kind, when = note.get("kind"), when_text(start, snap.now)
         span = ""
         if isinstance(note.get("hr_min"), int | float) and isinstance(note.get("hr_max"), int | float):
             span = f"（这段时间 {note['hr_min']:.0f}–{note['hr_max']:.0f} 次/分）"
@@ -348,7 +348,7 @@ def _event_findings(snap: Snapshot) -> list[Finding]:
         found.append(Finding(
             f"ecg:{ecg['start']}",
             "心电图结果：房颤",
-            f"{_when(start, snap.now)} 量的心电图结果是房颤（Atrial Fibrillation）{rate}。"
+            f"{when_text(start, snap.now)} 量的心电图结果是房颤（Atrial Fibrillation）{rate}。"
             "手表的单导联心电图不能确诊，但房颤值得尽快让医生看：「健康」App 的心电图记录可以导出 PDF 带去。"
             "如果同时胸痛、气短或头晕，马上就医。",
         ))

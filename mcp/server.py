@@ -10,6 +10,7 @@ import json
 import os
 import pathlib
 import re
+import statistics
 import threading
 import time
 from datetime import date as date_cls
@@ -19,6 +20,7 @@ from zoneinfo import ZoneInfo
 import butler
 import notify
 import pandas as pd
+import telegram_bot
 import uvicorn
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
@@ -1745,6 +1747,189 @@ def start_butler() -> None:
         threading.Thread(target=_butler_loop, name="butler", daemon=True).start()
 
 
+# --- Telegram commands -----------------------------------------------------------
+#
+# telegram_bot.py long-polls the bot and hands each of the user's messages to
+# telegram_answer, which knows a few fixed words and answers from the data.
+# TELEGRAM_COMMANDS=off leaves the bot push-only.
+
+TELEGRAM_COMMANDS = os.getenv("TELEGRAM_COMMANDS", "on").strip().lower() not in {"off", "0", "false", "no"}
+
+# Checked in order; the first word found in the message decides the answer.
+_TELEGRAM_WORDS = [
+    ("report", "morning", ("早报", "morning")),
+    ("report", "evening", ("晚报", "evening")),
+    ("report", "weekly", ("周报", "weekly")),
+    ("report", "monthly", ("月报", "monthly")),
+    ("report", None, ("报告", "日报", "report")),
+    ("sleep", None, ("睡", "昨晚", "sleep")),
+    ("today", None, ("今天", "今日", "状态", "准备度", "步数", "活动", "运动", "today")),
+    ("help", None, ("帮助", "菜单", "命令", "help", "start", "?", "？")),
+]
+_TELEGRAM_REPORT_NAMES = {"morning": "早报", "evening": "晚报", "weekly": "周报", "monthly": "月报"}
+_TELEGRAM_HELP = "\n".join([
+    "**我能回答这几句**",
+    "- 今天（/today）：今天的状态和到现在的活动",
+    "- 睡眠（/sleep）：昨晚的睡眠",
+    "- 早报、晚报、周报、月报：最近一份",
+    "- 报告（/report）：最近一份报告",
+    "",
+    "提醒和报告照常自动推送。这里没有 AI，别的问题请在 Claude 里问（Apple Health 连接器）。",
+])
+# Health Auto Export names workouts in English.
+_WORKOUT_NAMES_ZH = {
+    "Cycling": "骑行", "Outdoor Cycling": "户外骑行", "Indoor Cycling": "室内骑行",
+    "Walk": "步行", "Walking": "步行", "Outdoor Walk": "户外步行", "Indoor Walk": "室内步行",
+    "Running": "跑步", "Outdoor Run": "户外跑步", "Indoor Run": "室内跑步", "Hiking": "徒步",
+    "Swimming": "游泳", "Pool Swim": "泳池游泳", "Open Water Swim": "开放水域游泳",
+    "Traditional Strength Training": "传统力量训练", "Functional Strength Training": "功能性力量训练",
+    "Core Training": "核心训练", "High Intensity Interval Training": "高强度间歇训练",
+    "Yoga": "瑜伽", "Pilates": "普拉提", "Cooldown": "放松", "Elliptical": "椭圆机",
+    "Rowing": "划船", "Stair Stepper": "踏步机", "Dance": "舞蹈", "Badminton": "羽毛球",
+    "Basketball": "篮球", "Soccer": "足球", "Tennis": "网球", "Table Tennis": "乒乓球",
+}
+
+
+def _telegram_intent(text: str) -> tuple[str, str | None]:
+    """(today | sleep | report | help | unknown, report kind) for one message."""
+    words = text.strip().lower()
+    if words.startswith("/"):  # /sleep@SomeBot in a group
+        words = words.split("@", 1)[0]
+    for intent, kind, keys in _TELEGRAM_WORDS:
+        if any(key in words for key in keys):
+            return intent, kind
+    return "unknown", None
+
+
+def _telegram_activity(day: dict) -> list[str]:
+    lines = []
+    if (steps := day.get("steps")) is not None:
+        lines.append(f"- 步数 {steps:,.0f}")
+    if (km := day.get("distance_km")) is not None:
+        lines.append(f"- 走路和跑步 {km:.1f} 公里")
+    if (kj := day.get("active_energy_kj")) is not None:
+        lines.append(f"- 活动能量 {kj:,.0f} kJ（约 {kj / 4.184:,.0f} 千卡）")
+    if (minutes := day.get("exercise_min")) is not None:
+        lines.append(f"- 锻炼 {minutes:.0f} 分钟")
+    if (minutes := day.get("stand_min")) is not None:
+        lines.append(f"- 站立 {minutes:.0f} 分钟")
+    return lines
+
+
+def _telegram_workouts(today: str) -> list[str]:
+    lines = []
+    for workout in json.loads(get_workouts(days=1))["records"]:
+        if workout.get("date") != today:
+            continue
+        name = workout.get("name") or "运动"
+        first = f"{workout['start'][11:]} {_WORKOUT_NAMES_ZH.get(name, name)}"
+        if workout.get("duration_min") is not None:
+            first += f" {workout['duration_min']:.0f} 分钟"
+        parts = [first]
+        if (distance := workout.get("distance")) and distance.get("unit") == "km":
+            parts.append(f"{distance['value']:.1f} 公里")
+        if heart_rate := workout.get("hr_avg"):
+            parts.append(f"平均心率 {heart_rate['value']:.0f}")
+        lines.append("- " + "，".join(parts))
+    return lines
+
+
+def _telegram_freshness(now: datetime) -> str:
+    df = load_all_csv()
+    newest = df["Date/Time"].max() if not df.empty else None
+    if newest is not None and now - newest <= timedelta(hours=3):
+        return f"数据截至 {newest:%H:%M}。"
+    where = "服务器还没有数据" if newest is None else f"数据只到{butler.when_text(newest, now)}"
+    return f"⚠️ {where}：解锁一下 iPhone，让 Health Auto Export 同步。"
+
+
+def _telegram_today() -> str:
+    now = _now()
+    today = now.date().isoformat()
+    ready = butler.readiness(_butler_snapshot())
+    lines = [f"**今天 {now.month}月{now.day}日**", ready["summary"], ready["advice"]]
+    lines += [f"- {text}" for text in ready["reasons"] + ready["notes"]]
+    day = next((rec for rec in json.loads(get_daily_fitness(days=1))["records"] if rec["date"] == today), {})
+    moves = _telegram_activity(day) + _telegram_workouts(today)
+    lines += ["", "**到现在的活动**", *moves] if moves else ["", "今天还没有活动数据。"]
+    return "\n".join([*lines, "", _telegram_freshness(now)])
+
+
+def _telegram_sleep() -> str:
+    nights = [rec for rec in json.loads(get_daily_sleep(days=15))["records"]
+              if (rec.get("total_h") or 0) > 0 or rec.get("wake_time")]
+    if not nights:
+        return "最近两周没有睡眠数据：睡觉时戴着手表，早上解锁 iPhone 让它上传。"
+    night = nights[-1]
+    lines = []
+    if night["date"] != _today().isoformat():
+        lines += ["昨晚的睡眠还没传上来：没戴表睡的话正常；戴了的话解锁一下 iPhone 让它上传。下面是最近一晚。", ""]
+    day = date_cls.fromisoformat(night["date"])
+    lines.append(f"**{day.month}月{day.day}日早上醒的那一晚**")
+    first = []
+    if night.get("bedtime"):
+        first.append(f"{night['bedtime'][11:]} 入睡")
+    if night.get("wake_time"):
+        first.append(f"{night['wake_time'][11:]} 醒")
+    if total := night.get("total_h"):
+        slept = f"睡着 {butler.hours_text(total)}"
+        prior = [rec["total_h"] for rec in nights[:-1] if rec.get("total_h")][-butler.SLEEP_NIGHTS:]
+        if len(prior) >= butler.SLEEP_MIN_NIGHTS:
+            slept += f"（近两周中位数 {butler.hours_text(statistics.median(prior))}）"
+        first.append(slept)
+    stages = [f"{label} {butler.hours_text(night[key])}"
+              for label, key in (("深睡", "deep_h"), ("REM", "rem_h"), ("核心", "core_h"), ("清醒", "awake_h"))
+              if night.get(key)]
+    vitals = next((rec for rec in json.loads(get_daily_vitals(days=15))["records"]
+                   if rec["date"] == night["date"]), {})
+    signs = []
+    if (hrv := vitals.get("hrv_night_ms")) is not None:
+        signs.append(f"夜间 HRV {hrv:.0f} ms")
+    if (rate := vitals.get("respiratory_rate_night")) is not None:
+        signs.append(f"呼吸 {rate:.1f} 次/分")
+    if (oxygen := vitals.get("blood_oxygen_night_pct")) is not None:
+        signs.append(f"血氧 {oxygen:.0f}%")
+    if (temperature := night.get("wrist_temp_c")) is not None:
+        signs.append(f"手腕温度 {temperature:.1f} °C")
+    lines += ["- " + "，".join(group) for group in (first, stages, signs) if group]
+    return "\n".join(lines)
+
+
+def _telegram_report(kind: str | None) -> str:
+    if kind is None:
+        paths = [path for path in REPORTS_DIR.glob("*.md") if _REPORT_FILE_RE.match(path.stem)]
+        if not paths:
+            return "还没有报告。"
+        return max(paths, key=lambda path: path.stat().st_mtime).read_text(encoding="utf-8")
+    name = _TELEGRAM_REPORT_NAMES[kind]
+    report = _latest_report(kind)
+    if report is None:
+        return f"还没有{name}。"
+    if kind in ("morning", "evening") and report["date"] != _today().isoformat():
+        day = date_cls.fromisoformat(report["date"])
+        return f"今天的{name}还没写，这是 {day.month}月{day.day}日的。\n\n{report['content']}"
+    return report["content"]
+
+
+def telegram_answer(text: str) -> str:
+    """The reply (Markdown) to one Telegram message from the user."""
+    intent, kind = _telegram_intent(text)
+    if intent == "today":
+        return _telegram_today()
+    if intent == "sleep":
+        return _telegram_sleep()
+    if intent == "report":
+        return _telegram_report(kind)
+    if intent == "help":
+        return _TELEGRAM_HELP
+    return "这句我答不了，我只认得几句固定的话。\n\n" + _TELEGRAM_HELP
+
+
+def start_telegram_bot() -> None:
+    if TELEGRAM_COMMANDS and telegram_bot.configured():
+        threading.Thread(target=telegram_bot.run, args=(telegram_answer,), name="telegram", daemon=True).start()
+
+
 mcp.settings.streamable_http_path = f"/mcp/{MCP_PATH_TOKEN}"
 
 inner_app = mcp.streamable_http_app()
@@ -1756,6 +1941,7 @@ async def app(scope, receive, send):
 
 if __name__ == "__main__":
     start_butler()
+    start_telegram_bot()
     # Bind to loopback only; Nginx/Caddy terminates TLS in front of it. The
     # access log is off because every MCP request line contains the URL token.
     uvicorn.run(

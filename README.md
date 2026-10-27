@@ -114,6 +114,13 @@ the same pass share one push; nothing goes out in the quiet hours
 the pushes. What went out is kept in `BUTLER_DIR/state.json`, and the reports
 see it as `alerts_sent`.
 
+**Telegram commands.** The bot also answers your own messages (from
+`TELEGRAM_CHAT_ID` only) with a few fixed commands, straight from the data
+and with no AI behind them: `/today` (readiness, last night and today's
+activity so far), `/sleep` (last night), `/report` (the newest report), and
+the words 今天, 睡眠, 早报, 晚报, 周报, 月报. Anything else gets the list.
+`TELEGRAM_COMMANDS=off` keeps the bot push-only.
+
 **HTTP API for scheduled routines.** Claude's scheduled cloud routines cannot
 attach a custom connector, so the MCP server also exposes plain HTTPS
 routes, guarded by `Authorization: Bearer $REPORT_API_TOKEN`:
@@ -134,6 +141,7 @@ apple-health-mcp/
 ├── mcp/server.py              FastMCP MCP server     (port 8002)
 ├── mcp/butler.py              Readiness and alert rules (personal baselines)
 ├── mcp/notify.py              Telegram / Server酱 / PushPlus delivery
+├── mcp/telegram_bot.py        Answers the Telegram commands
 ├── requirements.txt           Pinned Python dependencies
 ├── .env.example               Tokens, paths, time zone and push channels
 ├── deploy/
