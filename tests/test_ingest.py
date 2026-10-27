@@ -19,6 +19,7 @@ def _load(tmp_path: Path, monkeypatch, token: str = TEST_TOKEN):
     monkeypatch.setenv("SLEEP_DIR", str(tmp_path / "sleep"))
     monkeypatch.setenv("ECG_DIR", str(tmp_path / "ecg"))
     monkeypatch.setenv("HR_NOTIFICATIONS_DIR", str(tmp_path / "hr-notifications"))
+    monkeypatch.setenv("STATE_OF_MIND_DIR", str(tmp_path / "state-of-mind"))
     spec = importlib.util.spec_from_file_location("ingest_main", REPO_ROOT / "ingest" / "main.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -189,6 +190,16 @@ def test_heart_rate_notifications_are_stored(tmp_path: Path, monkeypatch):
     response = client.post("/ingest", json={"data": {"heartRateNotifications": [note]}}, headers=AUTH)
     assert response.json() == {"status": "saved", "workouts": 0, "heart_rate_notifications": 1}
     assert json.loads((tmp_path / "hr-notifications" / "20261021_031000.json").read_text()) == note
+
+
+def test_state_of_mind_entries_are_stored_by_id(tmp_path: Path, monkeypatch):
+    _, client = _load(tmp_path, monkeypatch)
+    entry = {"id": "AB12-CD", "start": "2026-10-26T13:00:00Z", "end": "2026-10-26T13:00:00Z",
+             "kind": "daily_mood", "valence": -0.4, "valenceClassification": "slightly_unpleasant",
+             "labels": ["stressed"], "associations": ["work"]}
+    response = client.post("/ingest", json={"data": {"stateOfMind": [entry]}}, headers=AUTH)
+    assert response.json() == {"status": "saved", "workouts": 0, "state_of_mind": 1}
+    assert json.loads((tmp_path / "state-of-mind" / "AB12-CD.json").read_text()) == entry
 
 
 def test_the_service_may_write_every_directory_it_uses():

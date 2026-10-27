@@ -38,6 +38,7 @@ WORKOUTS_DIR = pathlib.Path(os.getenv("WORKOUTS_DIR", "/opt/health/workouts"))
 SLEEP_DIR = pathlib.Path(os.getenv("SLEEP_DIR", "/opt/health/sleep"))
 ECG_DIR = pathlib.Path(os.getenv("ECG_DIR", "/opt/health/ecg"))
 HR_NOTIFICATIONS_DIR = pathlib.Path(os.getenv("HR_NOTIFICATIONS_DIR", "/opt/health/hr-notifications"))
+STATE_OF_MIND_DIR = pathlib.Path(os.getenv("STATE_OF_MIND_DIR", "/opt/health/state-of-mind"))
 # Health Auto Export writes CSV timestamps in the phone's local time. Set
 # USER_TZ (e.g. Asia/Shanghai) when the VPS runs in a different zone so that
 # "today", "last N days" and report dates follow the user, not the server.
@@ -935,10 +936,10 @@ async def send_message(text: str, title: str = "") -> str:
     return json.dumps(results, ensure_ascii=False)
 
 
-# --- ECG and heart rate notifications -----------------------------------------
+# --- ECG, heart rate notifications and State of Mind --------------------------
 #
 # One Health Auto Export automation each (JSON); the ingest service stores
-# every recording or notification as <DIR>/<start time>.json.
+# every recording, notification or mood entry as <DIR>/<id or start>.json.
 
 
 def _records_json(records: list[dict], days: int) -> str:
@@ -1009,6 +1010,34 @@ def get_heart_rate_notifications(days: int = 30) -> str:
             rec.update(hr_min=min(rates), hr_avg=round(sum(rates) / len(rates), 1), hr_max=max(rates))
         if hrv := _sample_values(note.get("heartRateVariation"), "hrv"):
             rec["hrv_avg_ms"] = round(sum(hrv) / len(hrv), 1)
+        records.append(rec)
+    return _records_json(records, days)
+
+
+@mcp.tool()
+def get_state_of_mind(days: int = 14) -> str:
+    """Moods and emotions the user logged (State of Mind) in the last N days, oldest first.
+
+    The watch does not measure mood; these are entries the user made in the
+    Mindfulness app or the Health app. Each record has ``time`` (local),
+    ``kind`` ("daily_mood" for the day as a whole, "momentary_emotion" for
+    one moment), ``valence`` from -1 (very unpleasant) to 1 (very pleasant),
+    ``feeling`` (``valenceClassification``, e.g. "slightly_unpleasant"),
+    ``labels`` (e.g. "stressed", "calm") and ``associations`` (what it was
+    about, e.g. "work", "family").
+    """
+    cutoff = _now() - timedelta(days=days)
+    records = []
+    for start, entry in _load_events(STATE_OF_MIND_DIR):
+        if start < cutoff:
+            continue
+        rec = {"time": start.strftime("%Y-%m-%d %H:%M"), "kind": entry.get("kind")}
+        if isinstance(entry.get("valence"), int | float):
+            rec["valence"] = round(float(entry["valence"]), 2)
+        rec["feeling"] = entry.get("valenceClassification")
+        for key in ("labels", "associations"):
+            if isinstance(entry.get(key), list) and entry[key]:
+                rec[key] = entry[key]
         records.append(rec)
     return _records_json(records, days)
 
@@ -1158,6 +1187,7 @@ def build_bundle(days: int = 14) -> dict:
         "workouts": json.loads(get_workouts(days=days)),
         "ecg": json.loads(get_ecg(days=days)),
         "heart_rate_notifications": json.loads(get_heart_rate_notifications(days=days)),
+        "state_of_mind": json.loads(get_state_of_mind(days=days)),
         "other_metrics": other_metrics(days=min(days, 7)),
         "report_7_days_ago": previous if previous.get("date") else None,
     }

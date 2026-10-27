@@ -15,7 +15,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=@BASE@/data @BASE@/workouts @BASE@/sleep @BASE@/ecg @BASE@/hr-notifications
+ReadWritePaths=@BASE@/data @BASE@/workouts @BASE@/sleep @BASE@/ecg @BASE@/hr-notifications @BASE@/state-of-mind
 
 [Install]
 WantedBy=multi-user.target

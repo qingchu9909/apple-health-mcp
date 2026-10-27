@@ -65,7 +65,12 @@ def _import_server(data_dir: Path):
     workouts_dir = data_dir.parent / "workouts"
     workouts_dir.mkdir(exist_ok=True)
     os.environ["WORKOUTS_DIR"] = str(workouts_dir)
-    for name, folder in (("SLEEP_DIR", "sleep"), ("ECG_DIR", "ecg"), ("HR_NOTIFICATIONS_DIR", "hr-notifications")):
+    for name, folder in (
+        ("SLEEP_DIR", "sleep"),
+        ("ECG_DIR", "ecg"),
+        ("HR_NOTIFICATIONS_DIR", "hr-notifications"),
+        ("STATE_OF_MIND_DIR", "state-of-mind"),
+    ):
         (data_dir.parent / folder).mkdir(exist_ok=True)
         os.environ[name] = str(data_dir.parent / folder)
     # Tests that don't care about reports get a sibling reports/ dir for free.

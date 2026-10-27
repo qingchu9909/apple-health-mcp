@@ -76,3 +76,5 @@ else
 fi
 notes=("$BASE"/hr-notifications/*.json)
 echo "心率通知：${#notes[@]} 条"
+moods=("$BASE"/state-of-mind/*.json)
+echo "心情记录：${#moods[@]} 条"

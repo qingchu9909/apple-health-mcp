@@ -9,8 +9,9 @@ Every automation posts to the same /ingest URL:
 - Sleep Analysis alone as JSON: the CSV only has durations, the JSON also
   says when each night began and ended. Each night is written to
   SLEEP_DIR/<date it ended on>.json.
-- ECG recordings and heart rate notifications as JSON, one automation each,
-  written to ECG_DIR and HR_NOTIFICATIONS_DIR as <start time>.json.
+- ECG recordings, heart rate notifications and State of Mind entries as JSON,
+  one automation each, written to ECG_DIR, HR_NOTIFICATIONS_DIR and
+  STATE_OF_MIND_DIR as <id or start time>.json.
 """
 import hashlib
 import hmac
@@ -39,6 +40,8 @@ ECG_DIR = pathlib.Path(os.getenv("ECG_DIR", "/opt/health/ecg"))
 ECG_DIR.mkdir(parents=True, exist_ok=True)
 HR_NOTIFICATIONS_DIR = pathlib.Path(os.getenv("HR_NOTIFICATIONS_DIR", "/opt/health/hr-notifications"))
 HR_NOTIFICATIONS_DIR.mkdir(parents=True, exist_ok=True)
+STATE_OF_MIND_DIR = pathlib.Path(os.getenv("STATE_OF_MIND_DIR", "/opt/health/state-of-mind"))
+STATE_OF_MIND_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI()
 
@@ -169,7 +172,9 @@ def save_sleep(metrics: list) -> int:
 
 
 def _event_filename(event: dict) -> str:
-    """<start as YYYYMMDD_HHMMSS>.json, so a re-sent event overwrites itself."""
+    """<id>.json, else <start as YYYYMMDD_HHMMSS>.json, so a re-sent event overwrites itself."""
+    if event_id := re.sub(r"[^A-Za-z0-9_-]", "", str(event.get("id") or ""))[:80]:
+        return f"{event_id}.json"
     digits = re.sub(r"\D", "", str(event.get("start") or ""))[:14]
     if len(digits) == 14:
         return f"{digits[:8]}_{digits[8:]}.json"
@@ -197,12 +202,13 @@ def save_json(payload) -> dict:
         # About 15,000 voltage samples per recording, not used by any tool.
         "ecg": save_events(data.get("ecg"), ECG_DIR, drop=("voltageMeasurements",)),
         "heart_rate_notifications": save_events(data.get("heartRateNotifications"), HR_NOTIFICATIONS_DIR),
+        "state_of_mind": save_events(data.get("stateOfMind"), STATE_OF_MIND_DIR),
     }
     if not workouts and not any(counts.values()) and data.get("metrics"):
         raise HTTPException(
             status_code=422,
             detail="Send Health Metrics as CSV; JSON is only read for Sleep Analysis, Workouts, "
-            "ECG and Heart Rate Notifications.",
+            "ECG, Heart Rate Notifications and State of Mind.",
         )
     saved = []
     for workout in workouts:

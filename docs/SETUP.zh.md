@@ -91,12 +91,14 @@ curl -fsSL https://raw.githubusercontent.com/qingchu9909/apple-health-mcp/main/d
 
 | 项目 | 选择 |
 | --- | --- |
-| Data Type | ECG / Heart Rate Notifications |
+| Data Type | ECG / Heart Rate Notifications / State of Mind |
 | Export Format | JSON |
 | Date Range | Default |
 | Sync Cadence | 每 1 小时 |
 
-心电图的电压采样（每次约 1.5 万个点）服务器不保存，只留结论和平均心率。心情、用药、症状、经期等类型要你在「健康」App 里手动记录才有数据，服务器暂不接收。
+**自动化六：心情**：Data Type 选 State of Mind，其余同上。手表不会自己测心情，要你在手表「正念」App 或 iPhone「健康」App 里记录「心理状态」才有数据。
+
+心电图的电压采样（每次约 1.5 万个点）服务器不保存，只留结论和平均心率。用药、症状、经期等类型要你在「健康」App 里手动记录才有数据，服务器暂不接收。
 
 建好后：
 

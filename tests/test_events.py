@@ -1,4 +1,4 @@
-"""Tests for the ECG and heart rate notification tools (ECG_DIR, HR_NOTIFICATIONS_DIR)."""
+"""Tests for the ECG, heart rate notification and State of Mind tools."""
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -63,6 +63,29 @@ def test_heart_rate_notifications_are_told_apart(tmp_data_dir: Path, monkeypatch
     assert afib["end"] == (start + timedelta(hours=4)).strftime("%Y-%m-%d %H:%M")
 
 
+def test_get_state_of_mind_lists_logged_moods_in_local_time(tmp_data_dir: Path, monkeypatch):
+    server = _server(tmp_data_dir, monkeypatch)
+    moods = Path(server.STATE_OF_MIND_DIR)
+    when = (datetime.now(ZoneInfo("UTC")) - timedelta(days=1)).replace(second=0, microsecond=0)
+    _write(moods, "m1", {"id": "m1", "start": when.strftime("%Y-%m-%dT%H:%M:%SZ"), "kind": "daily_mood",
+                         "valence": -0.43, "valenceClassification": "slightly_unpleasant",
+                         "labels": ["stressed", "tired"], "associations": ["work"], "metadata": {}})
+    _write(moods, "m2", {"id": "m2", "start": (when - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                         "kind": "momentary_emotion", "valence": 0.8, "valenceClassification": "pleasant",
+                         "labels": [], "associations": []})
+
+    result = json.loads(server.get_state_of_mind(days=14))
+    assert result["records"] == [{
+        "time": when.astimezone(TZ).strftime("%Y-%m-%d %H:%M"),
+        "kind": "daily_mood",
+        "valence": -0.43,
+        "feeling": "slightly_unpleasant",
+        "labels": ["stressed", "tired"],
+        "associations": ["work"],
+    }]
+    assert json.loads(server.get_state_of_mind(days=60))["days_returned"] == 2
+
+
 def test_the_bundle_carries_ecg_and_notifications(tmp_data_dir: Path, monkeypatch):
     server = _server(tmp_data_dir, monkeypatch)
     start = datetime.now(TZ) - timedelta(days=2)
@@ -70,3 +93,4 @@ def test_the_bundle_carries_ecg_and_notifications(tmp_data_dir: Path, monkeypatc
     bundle = server.build_bundle(days=14)
     assert bundle["ecg"]["days_returned"] == 1
     assert bundle["heart_rate_notifications"]["records"] == []
+    assert bundle["state_of_mind"]["records"] == []
