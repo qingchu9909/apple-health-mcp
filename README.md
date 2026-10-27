@@ -79,14 +79,15 @@ that write the morning, evening, weekly and monthly reports.
 | Tool | Description | Default window |
 | --- | --- | --- |
 | `list_metrics` | Lists every health metric with at least one data point, then how many ECG recordings, heart rate notifications, logged moods and nights with bedtime / wake time are on record. | n/a |
-| `get_latest` | Most recent non-empty snapshot across all metrics. | n/a |
+| `get_latest` | Each metric's latest reading and its time; for totals such as steps, the latest day's total so far. | n/a |
 | `get_metric` | Time series for a single metric; `ecg`, `heart_rate_notifications`, `state_of_mind` and `sleep_times` return what the dedicated tools return, and `readiness` returns today's readiness (below). | 30 days |
-| `get_summary` | avg/min/max/last for the headline metrics, then today's readiness. | 7 days |
+| `get_summary` | avg/min/max/last of the daily values of the headline metrics (today so far apart for totals), then today's readiness. | 7 days |
 | `get_sleep` | Raw sleep + wrist-temp rows, then each night's bedtime and wake time. | 14 days |
-| `get_fitness` | Raw fitness + HR rows. | 14 days |
+| `get_fitness` | Fitness + HR, one row per day. | 14 days |
 
-The CSV exports are daily aggregates with 100+ columns, so any of those
-columns can be queried via `get_metric` even if no dedicated tool wraps them.
+The CSV exports have 100+ columns, so any of those columns can be queried via
+`get_metric` even if no dedicated tool wraps them. Exports grouped by day and by
+minute both work, also side by side: where a day has both, the minute rows win.
 
 Claude's connectors can keep the tool list they first saw, so a connector
 added before `get_ecg`, `get_heart_rate_notifications` and

@@ -584,14 +584,27 @@ def list_metrics() -> str:
 
 @mcp.tool()
 def get_latest() -> str:
-    """Get the most recent health data snapshot."""
+    """Get the most recent health data snapshot: each metric's latest reading
+    and when it was taken, or for steps, energy and other totals the latest
+    day's total so far."""
     df = load_all_csv()
     if df.empty:
         return _no_data()
-    row = df.dropna(how="all", subset=[c for c in df.columns if c != "Date/Time"]).iloc[-1]
-    data = row.dropna().to_dict()
-    data["Date/Time"] = str(data["Date/Time"])
-    return json.dumps(data, indent=2)
+    latest = {}
+    for col in df.columns:
+        rows = df[["Date/Time", col]].dropna() if col != "Date/Time" else None
+        if rows is None or rows.empty:
+            continue
+        when, value = rows["Date/Time"].iloc[-1], rows[col].iloc[-1]
+        if not pd.api.types.is_numeric_dtype(rows[col]):
+            latest[col] = {"value": str(value), "time": when.strftime("%Y-%m-%d %H:%M")}
+        elif _daily_agg(col) == "sum":
+            day = rows.loc[rows["Date/Time"].dt.normalize() == when.normalize(), col]
+            latest[col] = {"day_total": _round_or_none(day.sum()), "date": when.strftime("%Y-%m-%d"),
+                           "through": when.strftime("%H:%M")}
+        else:
+            latest[col] = {"value": _round_or_none(value), "time": when.strftime("%Y-%m-%d %H:%M")}
+    return json.dumps(latest, indent=2, ensure_ascii=False)
 
 
 @mcp.tool()
@@ -687,22 +700,25 @@ def get_sleep(days: int = 14) -> str:
 
 @mcp.tool()
 def get_fitness(days: int = 14) -> str:
-    """Get fitness metrics (steps, HRV, heart rate, VO2 max) for past N days."""
+    """Get fitness metrics (steps, HRV, heart rate, VO2 max) for past N days,
+    one row per day: totals for steps, energy, exercise and distance, the
+    day's lowest and highest heart rate, means for the rest."""
     df = load_all_csv()
     if df.empty:
         return _no_data()
-    cutoff = _now() - timedelta(days=days)
     fitness_cols = [
         "Step Count (count)", "Heart Rate [Min] (count/min)", "Heart Rate [Max] (count/min)",
         "Heart Rate [Avg] (count/min)", "Heart Rate Variability (ms)",
         "Resting Heart Rate (count/min)", "VO2 Max (ml/(kg·min))",
         "Active Energy (kJ)", "Apple Exercise Time (min)", "Walking + Running Distance (km)",
     ]
-    available = [c for c in fitness_cols if c in df.columns]
-    recent = df[df["Date/Time"] >= cutoff][["Date/Time"] + available].dropna(
-        subset=available, how="all"
-    )
-    return recent.to_string(index=False)
+    recent = _filter_recent(df, days)
+    daily = pd.DataFrame({
+        col: _daily_series(recent, col, _daily_agg(col)) for col in fitness_cols if col in recent.columns
+    }).sort_index()
+    if daily.empty:
+        return "No fitness data in this window."
+    return daily.round(2).rename_axis("Date").reset_index().to_string(index=False)
 
 
 @mcp.tool()

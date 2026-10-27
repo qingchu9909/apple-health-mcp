@@ -85,3 +85,22 @@ def test_a_later_backfill_after_compaction_still_counts_once(tmp_data_dir: Path,
     assert fitness[two_days_ago]["steps"] == 9100  # the newer total for a day without minutes
     assert fitness[yesterday]["steps"] == 10000
     assert fitness[today]["steps"] == 2010
+
+
+def test_latest_and_fitness_read_minute_rows_per_metric_and_per_day(tmp_data_dir: Path, monkeypatch):
+    monkeypatch.setenv("USER_TZ", TZ)
+    _write_minutes(tmp_data_dir)
+    _write_backfill(tmp_data_dir, "health_20260102_000000_000000_bbbbbb.csv", (9000, 9800, 1500))
+    server = _import_server(tmp_data_dir)
+    two_days_ago, yesterday, today = (str(day) for day in _days())
+
+    latest = json.loads(server.get_latest())
+    assert latest["Step Count (count)"] == {"day_total": 2010, "date": today, "through": "09:00"}
+    assert latest["Heart Rate Variability (ms)"] == {"value": 48, "time": f"{today} 00:00"}
+    assert latest["Sleep Analysis [Total] (hr)"] == {"value": 6.0, "time": f"{today} 00:00"}
+
+    lines = server.get_fitness(days=3).splitlines()
+    assert lines[0].split()[:3] == ["Date", "Step", "Count"]
+    assert [line.split()[:2] for line in lines[1:]] == [
+        [two_days_ago, "9000.0"], [yesterday, "10000.0"], [today, "2010.0"],
+    ]
