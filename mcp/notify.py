@@ -91,7 +91,10 @@ def send_telegram(client: httpx.Client, title: str, body: str) -> str:
     token = os.environ["TELEGRAM_BOT_TOKEN"]
     chat_id = os.environ["TELEGRAM_CHAT_ID"]
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    text = markdown_to_telegram_html(f"# {title}\n\n{body}" if title else body)
+    # A report whose first line is already its title gets no second copy of it.
+    first_line = body.lstrip().split("\n", 1)[0]
+    has_title = bool(title) and first_line.startswith("#") and first_line.lstrip("#").strip() == title.strip()
+    text = markdown_to_telegram_html(f"# {title}\n\n{body}" if title and not has_title else body)
     for chunk in split_message(text):
         payload = {"chat_id": chat_id, "text": chunk, "parse_mode": "HTML",
                    "disable_web_page_preview": True}

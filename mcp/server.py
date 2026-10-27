@@ -31,7 +31,7 @@ TOKEN = os.getenv("HEALTH_TOKEN")
 # The connector URL secret can differ from the phone's ingest token, so a
 # leaked connector URL cannot be used to push fake data (and vice versa).
 MCP_PATH_TOKEN = os.getenv("MCP_PATH_TOKEN") or TOKEN
-# Bearer token for the /api/* routes used by the daily-report routine.
+# Bearer token for the /api/* routes used by the report routines.
 # Unset = those routes answer 503.
 REPORT_API_TOKEN = os.getenv("REPORT_API_TOKEN", "")
 DATA_DIR = pathlib.Path(os.getenv("DATA_DIR", "/opt/health/data"))

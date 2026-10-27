@@ -1,4 +1,4 @@
-"""Tests for the /api routes used by the scheduled daily-report routine."""
+"""Tests for the /api routes used by the scheduled report routines."""
 import json
 from pathlib import Path
 

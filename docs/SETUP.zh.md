@@ -1,15 +1,15 @@
 # 部署指南（中文）
 
-把 Apple Watch 的健康数据自动送进 Claude：随时在 Claude 里问，每天早上收到一份推送到 Telegram / 微信的日报。Claude 账号不需要登录服务器。
+把 Apple Watch 的健康数据自动送进 Claude：随时在 Claude 里问；每天收到推送到 Telegram / 微信的早报和晚报，每周、每月各一份总结；数据明显异常时服务器马上提醒。Claude 账号不需要登录服务器。
 
 ```
 Apple Watch → iPhone「健康」
       │  Health Auto Export（Premium）每小时上传：健康指标 CSV + 运动 JSON
       ▼
-https://你的域名/ingest            你的服务器（本仓库）
+https://你的域名/ingest            你的服务器（本仓库）：每 5 分钟检查一次，明显异常马上推送
       │
       ├─ https://你的域名/mcp/<令牌>   Claude 自定义连接器：随时问答
-      └─ https://你的域名/api/…        Claude 云端定时任务：每天读数据、写日报
+      └─ https://你的域名/api/…        Claude 云端定时任务：写早报、晚报、周报、月报
                                         → 服务器存档并推送到 Telegram / 微信
 ```
 
@@ -117,15 +117,26 @@ claude.ai（网页或手机 App）→ **设置 → 连接器 → 添加自定义
 
 然后在对话里打开这个连接器，直接问：「我最近一周睡得怎么样？」「今天适合练强度吗？」「上次游泳的心率曲线」「把今天的建议发到我 Telegram」。
 
-## 4. Claude：每日日报（云端定时任务）
+## 4. Claude：早报、晚报、周报、月报（云端定时任务）
 
-云端定时任务用不了自定义连接器，所以它通过 HTTPS 接口直接读数据、交日报：
+云端定时任务用不了自定义连接器，所以它们通过 HTTPS 接口直接读数据、交报告，服务器存档后推送给你：
 
 1. 新建（或编辑）一个 Claude Code 云端环境：
    - 网络访问里，把你的域名加进允许列表（Allowed domains）。
    - 环境变量：`HEALTH_API_BASE=https://你的域名`，`HEALTH_API_TOKEN=<REPORT_API_TOKEN>`。
-2. 用这个环境创建定时任务：每天早上你起床、解锁过手机之后（例如 09:00）运行，提示词用 [`routines/daily-report.zh.prompt.md`](../routines/daily-report.zh.prompt.md)，把最后的「用户背景」换成你自己的情况。
-3. 手动触发一次，确认手机收到日报。
+2. 用这个环境建四个定时任务，每次运行都新开会话。提示词用下表里的文件，从「你的角色」开始整段复制，并把最后的「用户背景」换成你自己的情况：
+
+   | 报告 | 提示词 | 运行时间（选你的时区） | 模型 |
+   | --- | --- | --- | --- |
+   | 早报 | [`morning-report.zh.prompt.md`](../routines/morning-report.zh.prompt.md) | 每天 8–12 点每小时一次（`5 8-12 * * *`） | Sonnet |
+   | 晚报 | [`evening-report.zh.prompt.md`](../routines/evening-report.zh.prompt.md) | 每天 19:55（`55 19 * * *`） | Sonnet |
+   | 周报 | [`weekly-report.zh.prompt.md`](../routines/weekly-report.zh.prompt.md) | 每周一 8:50（`50 8 * * 1`） | Opus |
+   | 月报 | [`monthly-report.zh.prompt.md`](../routines/monthly-report.zh.prompt.md) | 每月 1 号 9:20（`20 9 1 * *`） | Opus |
+
+   早报要等昨晚的睡眠传上来（手机解锁后才会上传），所以 8–12 点每小时问一次服务器：传上来之后的第一次运行才写，到 12 点还没有就照写，其余几次直接结束，不会重复推送。
+3. 每个任务手动触发一次，确认手机收到。
+
+**异常提醒不用另外设置。** 服务器每 5 分钟看一次新数据，夜间 HRV 明显偏低、静息心率明显偏高、手腕温度或夜间呼吸频率明显升高、连续两晚血氧低于 92%、手表弹出的心率提醒、房颤的心电图，都会马上推送给你：同时发现的合成一条，同一件事一天只推一次，23:00–08:00 攒到早上再发。要改免打扰时段或关掉提醒，改服务器 `/opt/health/.env` 里的 `BUTLER_QUIET_HOURS`（例如 `22-7`，或 `off` 不设免打扰）或加一行 `BUTLER_ALERTS=off`，再运行 `systemctl restart health-mcp`。
 
 ## 日常维护
 
@@ -134,7 +145,8 @@ claude.ai（网页或手机 App）→ **设置 → 连接器 → 添加自定义
 | 看服务状态 | `systemctl status health-ingest health-mcp` |
 | 看日志 | `journalctl -u health-mcp -n 100` |
 | 看手机最近传上来没有、收到了哪些数据 | `bash /opt/health/app/deploy/status.sh`（被拒的上传会写明原因） |
-| 看历史日报 | `ls /opt/health/reports` |
+| 看历史报告 | `ls /opt/health/reports` |
+| 看推送过哪些异常提醒 | `cat /opt/health/butler/state.json` |
 | 重新显示配置 | `bash /opt/health/app/deploy/show-config.sh` |
 | 更新到最新代码 | `bash /opt/health/app/deploy/update.sh` |
 | 换掉某个令牌 | 删掉 `/opt/health/.env` 里对应那一行，重跑 `update.sh`，再到手机/Claude 里换成新值 |
@@ -146,10 +158,10 @@ claude.ai（网页或手机 App）→ **设置 → 连接器 → 添加自定义
 | Health Auto Export 报 401 | Header 值不对。运行 `bash /opt/health/app/deploy/status.sh` 看原因：缺少 Header 是名字没填成 `Authorization`；「got N characters」是令牌复制得不完整；提到 REPORT_API_TOKEN / MCP_PATH_TOKEN 是贴成了另外两组里的令牌 |
 | Claude 说没有健康数据，或者只查得到运动记录 | Health Auto Export 用中文时导出的列名也是中文，服务器读不了（`status.sh` 会显示「Claude 读不了」）。把这个 App 的语言改成 English（见第 2 节），再用 Manual Export 把这些天重新导出一次 |
 | 一直没有新数据 | 自动化只在手机解锁时运行；检查后台 App 刷新、加小组件，在 App 的 Activity Logs 里看报错 |
-| 日报说「昨晚睡眠还没同步」 | 定时任务比你解锁手机还早，把运行时间往后调 |
+| 早报说「昨晚的睡眠还没传上来」 | 到 12 点手机还没解锁过，或者没戴表睡。常常起得晚的话，把服务器 `.env` 里的 `MORNING_REPORT_HOURS` 改晚（例如 `9-13`）并运行 `systemctl restart health-mcp`，早报定时任务的时间也跟着改（`5 9-13 * * *`） |
 | 连接器显示 0 个工具 | URL 里的令牌抄错，或服务器上 `health-mcp` 没在运行 |
 | 定时任务报 403 | 云端环境的允许列表里没有你的域名 |
 | 推送失败 | Telegram：先给机器人发过消息吗？微信：SendKey 是否正确、免费额度是否用完 |
 | 证书申请失败 | 域名刚加的话等几分钟再重跑；Cloudflare 必须是灰色云朵（仅 DNS）；80 端口要能从外网访问 |
 
-数据存在你自己的服务器上，三个令牌分别控制「上传数据」「问答读取」「日报接口」，任何一个泄露只需单独更换那一个。
+数据存在你自己的服务器上，三个令牌分别控制「上传数据」「问答读取」「报告接口」，任何一个泄露只需单独更换那一个。

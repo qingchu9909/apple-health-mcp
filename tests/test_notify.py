@@ -69,6 +69,23 @@ def test_telegram_sends_html_then_falls_back_to_plain_text(monkeypatch):
     assert seen[1]["text"] == "日报\n\n绿"
 
 
+def test_telegram_does_not_repeat_a_title_the_report_starts_with(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:abc")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "42")
+    seen = []
+
+    def handler(request):
+        seen.append(json.loads(request.content)["text"])
+        return httpx.Response(200, json={"ok": True})
+
+    notify.send_all("早报 · 11月10日 周二", "# 早报 · 11月10日 周二\n\n睡了 7 小时", client=_client(handler))
+    notify.send_all("健康提醒：静息心率偏高", "今天静息心率 67", client=_client(handler))
+    assert seen == [
+        "<b>早报 · 11月10日 周二</b>\n\n睡了 7 小时",
+        "<b>健康提醒：静息心率偏高</b>\n\n今天静息心率 67",
+    ]
+
+
 def test_telegram_failure_is_reported(monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:abc")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "42")

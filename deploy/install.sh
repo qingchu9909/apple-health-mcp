@@ -242,7 +242,7 @@ else
   fail "数据接收服务异常：journalctl -u health-ingest -n 50"
 fi
 if wait_for http://127.0.0.1:8002/healthz 15 && check_mcp http://127.0.0.1:8002 && check_api http://127.0.0.1:8002; then
-  ok "MCP 服务和日报接口正常"
+  ok "MCP 服务和报告接口正常"
 else
   fail "MCP 服务异常：journalctl -u health-mcp -n 50"
 fi
@@ -475,7 +475,7 @@ if [[ $WEB != none ]]; then
 
   if [[ $web != none ]]; then
     if wait_for "$PUBLIC_BASE/health" 30 && check_ingest "$PUBLIC_BASE" && check_mcp "$PUBLIC_BASE" && check_api "$PUBLIC_BASE"; then
-      ok "外网 HTTPS 访问正常：接收、连接器、日报接口都通"
+      ok "外网 HTTPS 访问正常：接收、连接器、报告接口都通"
     elif check_mcp "$PUBLIC_BASE" --resolve "$DOMAIN:$HTTPS_PORT:127.0.0.1"; then
       fail "本机 HTTPS 正常，但从外网连不进来：检查服务商防火墙/安全组是否放行 80 和 $HTTPS_PORT"
     else
@@ -508,7 +508,7 @@ CONFIG_TEXT="**① iPhone：Health Auto Export（两个自动化都填这一套�
 **② Claude：自定义连接器 URL（认证选 None）**
 \`$PUBLIC_BASE/mcp/$MCP_PATH_TOKEN\`
 
-**③ Claude 云端定时日报：环境变量**
+**③ Claude 云端定时任务（早报、晚报、周报、月报）：环境变量**
 - \`HEALTH_API_BASE=$PUBLIC_BASE\`
 - \`HEALTH_API_TOKEN=$REPORT_API_TOKEN\`
 
@@ -525,7 +525,7 @@ if [[ -n "$(get_env TELEGRAM_CHAT_ID)$(get_env SERVERCHAN_SENDKEY)$(get_env PUSH
     fail "推送失败：$status"
   fi
 else
-  warn "还没配置推送渠道（Telegram / Server酱 / PushPlus），日报暂时只存服务器"
+  warn "还没配置推送渠道（Telegram / Server酱 / PushPlus），报告暂时只存服务器，异常提醒也发不出去"
 fi
 
 if ((!pushed)); then

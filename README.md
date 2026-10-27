@@ -71,8 +71,8 @@ message to your phone, and six raw tools remain as the escape hatch.
 | `save_health_report` | Persist a markdown report at `<REPORTS_DIR>/<YYYY-MM-DD>-<kind>.md`, `kind` being `morning`, `evening`, `weekly` or `monthly` (`<YYYY-MM-DD>.md` without one). Used by the scheduled report routines. |
 | `get_health_report` | Every report of a date, or — with no `date` arg — of the most recent day within `max_age_days`, plus the newest weekly and monthly summaries, so a fresh chat gets the long view in one call. |
 
-See [`routines/README.md`](routines/README.md) for how to set up the
-scheduled remote agent that calls `save_health_report` every morning.
+See [`routines/README.md`](routines/README.md) for the scheduled routines
+that write the morning, evening, weekly and monthly reports.
 
 **Raw / escape hatch:**
 
@@ -148,9 +148,10 @@ apple-health-mcp/
 │   └── supervisor/            Original process supervisor units
 ├── docs/SETUP.zh.md           Chinese step-by-step setup guide
 ├── routines/
+│   ├── {morning,evening,weekly,monthly}-report.zh.prompt.md
+│   │                             Chinese report routines using the HTTPS API
 │   ├── health-report.prompt.md   Prompt source for the daily-report routine (MCP)
-│   ├── daily-report.zh.prompt.md Chinese routine prompt using the HTTPS API
-│   └── README.md                 How to schedule the routine via /schedule
+│   └── README.md                 How to schedule the routines
 └── tests/
     ├── test_loader.py
     ├── test_smart_tools.py

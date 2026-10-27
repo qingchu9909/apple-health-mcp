@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Print the values to enter in Health Auto Export, the Claude connector and the
-# daily-report routine. They are secrets: anyone with them can read or write
+# report routines. They are secrets: anyone with them can read or write
 # your health data.
 set -euo pipefail
 
@@ -22,7 +22,7 @@ cat <<TEXT
 ② Claude：自定义连接器 URL（认证选 None）
 $base/mcp/$(get_env MCP_PATH_TOKEN)
 
-③ Claude 云端定时日报：环境变量
+③ Claude 云端定时任务（早报、晚报、周报、月报）：环境变量
 - HEALTH_API_BASE=$base
 - HEALTH_API_TOKEN=$(get_env REPORT_API_TOKEN)
 TEXT
