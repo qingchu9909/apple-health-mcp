@@ -46,12 +46,14 @@ message to your phone, and six raw tools remain as the escape hatch.
 | `get_daily_vitals` | Heart-rate min/max/avg, resting HR, HRV, respiratory rate, blood-oxygen — aggregated per day — plus an overnight CGM glucose profile (mean/min/max, % time in 3.9–7.8 mmol/L, sample count over 22:00–08:00, keyed to the wake date). | 14 days |
 | `get_baselines` | p10/p50/p90 + yesterday + 7d-vs-30d trend for every headline metric. | 30 days |
 
-**Workouts** (from a second Health Auto Export automation, JSON v2):
+**Workouts, ECG and heart rate notifications** (JSON automations):
 
 | Tool | Description | Default window |
 | --- | --- | --- |
 | `get_workouts` | One compact record per workout: type, start/end, duration, distance, energy, heart rate, elevation, conditions. | 14 days |
 | `get_workout_detail` | Minute-by-minute heart rate, heart-rate recovery, steps and metadata for one workout. | n/a |
+| `get_ecg` | ECG recordings: classification (sinus rhythm, AFib, inconclusive…), average heart rate, severity. | 90 days |
+| `get_heart_rate_notifications` | High, low and irregular-rhythm notifications with the threshold and the heart rate / HRV around them. | 30 days |
 
 **Push:**
 
@@ -278,10 +280,12 @@ format `JSON`, export version `2`, *Include Workout Metrics* on, *Include
 Route Data* off, time grouping `Minutes`, date range `Default`.
 
 Optionally add a third automation for **Health Metrics** with only *Sleep
-Analysis* selected, format `JSON`, export version `2`, time grouping `Days`,
-date range `Default`: the CSV export only has sleep durations, the JSON one
-also says when each night began and ended (`bedtime` / `wake_time` in
-`get_daily_sleep`).
+Analysis* selected, format `JSON`, export version `2`, *Summarize Data* on,
+time grouping `Days`, date range `Default`: the CSV export only has sleep
+durations, the JSON one also says when each night began and ended (`bedtime`
+/ `wake_time` in `get_daily_sleep`). Each automation carries one data type,
+so **ECG** and **Heart Rate Notifications** take one JSON automation each
+(`get_ecg`, `get_heart_rate_notifications`; ECG voltage samples are dropped).
 
 Tap **Run Now** once to push your historical data. The first run can be a few
 MB and may take a few seconds.

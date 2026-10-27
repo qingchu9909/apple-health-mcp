@@ -1,14 +1,16 @@
 """HTTPS endpoint that receives Apple Health exports from Health Auto Export.
 
-Two automations post to the same /ingest URL:
+Every automation posts to the same /ingest URL:
 
 - Health Metrics as CSV, sent as a multipart body. We strip the MIME envelope
   and write the inner CSV to DATA_DIR.
 - Workouts as JSON (export version 2). Each workout is written to
   WORKOUTS_DIR/<id>.json, so re-sent workouts overwrite instead of duplicating.
-- Optionally Sleep Analysis as JSON: the CSV only has durations, the JSON
-  also says when each night began and ended. Each night is written to
+- Sleep Analysis alone as JSON: the CSV only has durations, the JSON also
+  says when each night began and ended. Each night is written to
   SLEEP_DIR/<date it ended on>.json.
+- ECG recordings and heart rate notifications as JSON, one automation each,
+  written to ECG_DIR and HR_NOTIFICATIONS_DIR as <start time>.json.
 """
 import hashlib
 import hmac
@@ -33,6 +35,10 @@ WORKOUTS_DIR = pathlib.Path(os.getenv("WORKOUTS_DIR", "/opt/health/workouts"))
 WORKOUTS_DIR.mkdir(parents=True, exist_ok=True)
 SLEEP_DIR = pathlib.Path(os.getenv("SLEEP_DIR", "/opt/health/sleep"))
 SLEEP_DIR.mkdir(parents=True, exist_ok=True)
+ECG_DIR = pathlib.Path(os.getenv("ECG_DIR", "/opt/health/ecg"))
+ECG_DIR.mkdir(parents=True, exist_ok=True)
+HR_NOTIFICATIONS_DIR = pathlib.Path(os.getenv("HR_NOTIFICATIONS_DIR", "/opt/health/hr-notifications"))
+HR_NOTIFICATIONS_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI()
 
@@ -136,7 +142,7 @@ def _night_filename(night: dict) -> str | None:
 
 def save_sleep(metrics: list) -> int:
     """Store each night of a JSON sleep_analysis metric; other metrics are ignored."""
-    nights, ignored = 0, []
+    nights, segments, ignored = 0, 0, []
     for metric in metrics:
         if not isinstance(metric, dict):
             continue
@@ -144,12 +150,41 @@ def save_sleep(metrics: list) -> int:
             ignored.append(str(metric.get("name")))
             continue
         for night in metric.get("data") or []:
-            if isinstance(night, dict) and (name := _night_filename(night)):
+            if not isinstance(night, dict):
+                continue
+            # Without Summarize Data the app sends each sleep stage as its own
+            # segment, which says nothing about the night as a whole.
+            if isinstance(night.get("value"), str) and "startDate" in night:
+                segments += 1
+            elif name := _night_filename(night):
                 _write_atomic(SLEEP_DIR / name, json.dumps(night, ensure_ascii=False).encode("utf-8"))
                 nights += 1
     if ignored:
         print(f"[ingest] ignoring JSON metrics (send them as CSV): {', '.join(ignored)}", flush=True)
+    if segments:
+        print(f"[ingest] ignoring {segments} sleep segments: turn on Summarize Data in the sleep automation", flush=True)
+        if not nights:
+            raise HTTPException(status_code=422, detail="Got single sleep stages: turn on Summarize Data in this automation.")
     return nights
+
+
+def _event_filename(event: dict) -> str:
+    """<start as YYYYMMDD_HHMMSS>.json, so a re-sent event overwrites itself."""
+    digits = re.sub(r"\D", "", str(event.get("start") or ""))[:14]
+    if len(digits) == 14:
+        return f"{digits[:8]}_{digits[8:]}.json"
+    return f"{hashlib.sha1(json.dumps(event, sort_keys=True, default=str).encode()).hexdigest()[:20]}.json"
+
+
+def save_events(events, directory: pathlib.Path, drop: tuple[str, ...] = ()) -> int:
+    saved = 0
+    for event in events if isinstance(events, list) else []:
+        if not isinstance(event, dict):
+            continue
+        event = {k: v for k, v in event.items() if k not in drop}
+        _write_atomic(directory / _event_filename(event), json.dumps(event, ensure_ascii=False).encode("utf-8"))
+        saved += 1
+    return saved
 
 
 def save_json(payload) -> dict:
@@ -157,11 +192,17 @@ def save_json(payload) -> dict:
     if not isinstance(data, dict):
         raise HTTPException(status_code=400, detail="Expected a Health Auto Export JSON payload")
     workouts = data.get("workouts") or []
-    nights = save_sleep(data.get("metrics") or [])
-    if not workouts and not nights and data.get("metrics"):
+    counts = {
+        "nights": save_sleep(data.get("metrics") or []),
+        # About 15,000 voltage samples per recording, not used by any tool.
+        "ecg": save_events(data.get("ecg"), ECG_DIR, drop=("voltageMeasurements",)),
+        "heart_rate_notifications": save_events(data.get("heartRateNotifications"), HR_NOTIFICATIONS_DIR),
+    }
+    if not workouts and not any(counts.values()) and data.get("metrics"):
         raise HTTPException(
             status_code=422,
-            detail="Send Health Metrics as CSV; JSON is only read for Workouts and for Sleep Analysis.",
+            detail="Send Health Metrics as CSV; JSON is only read for Sleep Analysis, Workouts, "
+            "ECG and Heart Rate Notifications.",
         )
     saved = []
     for workout in workouts:
@@ -172,9 +213,8 @@ def save_json(payload) -> dict:
         dest = WORKOUTS_DIR / _workout_filename(workout)
         _write_atomic(dest, json.dumps(workout, ensure_ascii=False).encode("utf-8"))
         saved.append(dest.name)
-    result = {"status": "saved" if saved or nights else "empty", "workouts": len(saved)}
-    if nights:
-        result["nights"] = nights
+    result = {"status": "saved" if saved or any(counts.values()) else "empty", "workouts": len(saved)}
+    result.update({key: count for key, count in counts.items() if count})
     return result
 
 

@@ -74,7 +74,7 @@ curl -fsSL https://raw.githubusercontent.com/qingchu9909/apple-health-mcp/main/d
 | Date Range | Default |
 | Sync Cadence | 每 1 小时 |
 
-**自动化三：入睡和起床时间**（可选。CSV 里只有睡眠时长，几点睡、几点醒只在 JSON 格式里有）
+**自动化三：入睡和起床时间**（CSV 里只有睡眠时长，几点睡、几点醒只在 JSON 格式里有）
 
 | 项目 | 选择 |
 | --- | --- |
@@ -82,9 +82,21 @@ curl -fsSL https://raw.githubusercontent.com/qingchu9909/apple-health-mcp/main/d
 | Select Health Metrics | 只勾 Sleep Analysis |
 | Export Format | JSON |
 | Export Version | Version 2 |
+| Summarize Data | 开（关着的话发来的是一段段睡眠阶段，服务器会拒收） |
 | Time Grouping | Days |
 | Date Range | Default |
 | Sync Cadence | 每 1 小时 |
+
+**自动化四：心电图**、**自动化五：心率通知**（过高、过低、心律不齐提醒）。一个自动化只能选一种数据类型，所以各建一个，其余设置相同：
+
+| 项目 | 选择 |
+| --- | --- |
+| Data Type | ECG / Heart Rate Notifications |
+| Export Format | JSON |
+| Date Range | Default |
+| Sync Cadence | 每 1 小时 |
+
+心电图的电压采样（每次约 1.5 万个点）服务器不保存，只留结论和平均心率。心情、用药、症状、经期等类型要你在「健康」App 里手动记录才有数据，服务器暂不接收。
 
 建好后：
 

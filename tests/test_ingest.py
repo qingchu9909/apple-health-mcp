@@ -1,6 +1,7 @@
 """Tests for the ingest service (ingest/main.py)."""
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,8 @@ def _load(tmp_path: Path, monkeypatch, token: str = TEST_TOKEN):
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("WORKOUTS_DIR", str(tmp_path / "workouts"))
     monkeypatch.setenv("SLEEP_DIR", str(tmp_path / "sleep"))
+    monkeypatch.setenv("ECG_DIR", str(tmp_path / "ecg"))
+    monkeypatch.setenv("HR_NOTIFICATIONS_DIR", str(tmp_path / "hr-notifications"))
     spec = importlib.util.spec_from_file_location("ingest_main", REPO_ROOT / "ingest" / "main.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -147,6 +150,57 @@ def test_json_sleep_nights_are_stored_by_the_morning_they_ended_on(tmp_path: Pat
     # Re-sending the same nights overwrites instead of duplicating.
     client.post("/ingest", json=payload, headers=AUTH)
     assert len(list((tmp_path / "sleep").glob("*.json"))) == 2
+
+
+def test_sleep_segments_are_ignored_with_a_hint(tmp_path: Path, monkeypatch, capsys):
+    _, client = _load(tmp_path, monkeypatch)
+    segment = {"startDate": "2026-10-26 23:12:00 +0800", "endDate": "2026-10-26 23:40:00 +0800",
+               "qty": 0.47, "value": "Core"}
+    payload = {"data": {"metrics": [{"name": "sleep_analysis", "units": "hr", "data": [segment]}]}}
+    response = client.post("/ingest", json=payload, headers=AUTH)
+    assert response.status_code == 422
+    assert "Summarize Data" in response.json()["detail"]
+    assert "turn on Summarize Data" in capsys.readouterr().out
+    assert not list((tmp_path / "sleep").iterdir())
+
+
+def test_ecg_recordings_are_stored_without_voltages(tmp_path: Path, monkeypatch):
+    _, client = _load(tmp_path, monkeypatch)
+    ecg = {
+        "start": "2026-10-20 14:30:00 +0800", "end": "2026-10-20 14:30:30 +0800",
+        "classification": "Sinus Rhythm", "averageHeartRate": 62, "samplingFrequency": 512,
+        "numberOfVoltageMeasurements": 15360,
+        "voltageMeasurements": [{"date": "2026-10-20 14:30:00.000 +0800", "voltage": 0.0001, "units": "V"}] * 3,
+    }
+    response = client.post("/ingest", json={"data": {"ecg": [ecg]}}, headers=AUTH)
+    assert response.json() == {"status": "saved", "workouts": 0, "ecg": 1}
+    stored = json.loads((tmp_path / "ecg" / "20261020_143000.json").read_text())
+    assert stored["classification"] == "Sinus Rhythm"
+    assert "voltageMeasurements" not in stored
+
+    client.post("/ingest", json={"data": {"ecg": [ecg]}}, headers=AUTH)
+    assert len(list((tmp_path / "ecg").iterdir())) == 1
+
+
+def test_heart_rate_notifications_are_stored(tmp_path: Path, monkeypatch):
+    _, client = _load(tmp_path, monkeypatch)
+    note = {"start": "2026-10-21 03:10:00 +0800", "end": "2026-10-21 03:20:00 +0800", "threshold": 120,
+            "heartRate": [{"hr": 131, "units": "bpm"}], "heartRateVariation": []}
+    response = client.post("/ingest", json={"data": {"heartRateNotifications": [note]}}, headers=AUTH)
+    assert response.json() == {"status": "saved", "workouts": 0, "heart_rate_notifications": 1}
+    assert json.loads((tmp_path / "hr-notifications" / "20261021_031000.json").read_text()) == note
+
+
+def test_the_service_may_write_every_directory_it_uses():
+    # systemd's ProtectSystem=strict makes everything else read-only.
+    unit = (REPO_ROOT / "deploy" / "systemd" / "health-ingest.service").read_text()
+    writable = next(line for line in unit.splitlines() if line.startswith("ReadWritePaths="))
+    install = (REPO_ROOT / "deploy" / "install.sh").read_text()
+    source = (REPO_ROOT / "ingest" / "main.py").read_text()
+    for name in re.findall(r'os\.getenv\("(\w+_DIR)"', source):
+        folder = re.search(rf'set_env {name} "\$BASE/([\w-]+)"', install)
+        assert folder, f"install.sh does not set {name}"
+        assert f"@BASE@/{folder.group(1)}" in writable.split("=", 1)[1].split(), name
 
 
 def test_json_health_metrics_are_rejected_with_a_hint(tmp_path: Path, monkeypatch):

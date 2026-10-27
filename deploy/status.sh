@@ -60,10 +60,19 @@ if ((${#workouts[@]})); then
 else
   echo "运动记录：还没有"
 fi
-# One file per night, named by the morning it ended on.
+# One file per night (named by the morning it ended on), per ECG and per
+# notification (named by its start, YYYYMMDD_HHMMSS).
 nights=("$BASE"/sleep/*.json)
 if ((${#nights[@]})); then
   echo "入睡/起床时间：${#nights[@]} 晚（$(basename "${nights[0]}" .json) 到 $(basename "${nights[-1]}" .json)）"
 else
-  echo "入睡/起床时间：还没有（要第三个自动化，见设定文档）"
+  echo "入睡/起床时间：还没有（要「睡眠时间」自动化，见设定文档）"
 fi
+ecgs=("$BASE"/ecg/*.json)
+if ((${#ecgs[@]})); then
+  echo "心电图：${#ecgs[@]} 次（最近一次 $(basename "${ecgs[-1]}" .json | cut -c1-8)）"
+else
+  echo "心电图：还没有（没量过，或还没建「心电图」自动化）"
+fi
+notes=("$BASE"/hr-notifications/*.json)
+echo "心率通知：${#notes[@]} 条"

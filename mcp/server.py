@@ -36,6 +36,8 @@ DATA_DIR = pathlib.Path(os.getenv("DATA_DIR", "/opt/health/data"))
 REPORTS_DIR = pathlib.Path(os.getenv("REPORTS_DIR", "/opt/health/reports"))
 WORKOUTS_DIR = pathlib.Path(os.getenv("WORKOUTS_DIR", "/opt/health/workouts"))
 SLEEP_DIR = pathlib.Path(os.getenv("SLEEP_DIR", "/opt/health/sleep"))
+ECG_DIR = pathlib.Path(os.getenv("ECG_DIR", "/opt/health/ecg"))
+HR_NOTIFICATIONS_DIR = pathlib.Path(os.getenv("HR_NOTIFICATIONS_DIR", "/opt/health/hr-notifications"))
 # Health Auto Export writes CSV timestamps in the phone's local time. Set
 # USER_TZ (e.g. Asia/Shanghai) when the VPS runs in a different zone so that
 # "today", "last N days" and report dates follow the user, not the server.
@@ -798,30 +800,35 @@ def _quantity(value) -> dict | None:
     return None
 
 
-_workout_cache: tuple[tuple, list] | None = None
+_event_caches: dict[pathlib.Path, tuple[tuple, list]] = {}
 
 
-def _load_workouts() -> list[tuple[datetime, dict]]:
-    global _workout_cache
-    if not WORKOUTS_DIR.exists():
+def _load_events(directory: pathlib.Path) -> list[tuple[datetime, dict]]:
+    """JSON files with a ``start`` time (workouts, ECGs, notifications), oldest first."""
+    if not directory.exists():
         return []
-    paths = sorted(WORKOUTS_DIR.glob("*.json"))
+    paths = sorted(directory.glob("*.json"))
     sig = tuple((p.name, p.stat().st_mtime_ns, p.stat().st_size) for p in paths)
-    if _workout_cache is not None and _workout_cache[0] == sig:
-        return _workout_cache[1]
+    cached = _event_caches.get(directory)
+    if cached is not None and cached[0] == sig:
+        return cached[1]
     items = []
     for path in paths:
         try:
-            workout = json.loads(path.read_text(encoding="utf-8"))
+            event = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
-            print(f"[load_workouts] skipping {path.name}: {exc}", flush=True)
+            print(f"[load_events] skipping {path}: {exc}", flush=True)
             continue
-        start = _parse_workout_time(workout.get("start"))
+        start = _parse_workout_time(event.get("start")) if isinstance(event, dict) else None
         if start is not None:
-            items.append((start, workout))
+            items.append((start, event))
     items.sort(key=lambda item: item[0])
-    _workout_cache = (sig, items)
+    _event_caches[directory] = (sig, items)
     return items
+
+
+def _load_workouts() -> list[tuple[datetime, dict]]:
+    return _load_events(WORKOUTS_DIR)
 
 
 def _workout_summary(start: datetime, workout: dict) -> dict:
@@ -926,6 +933,84 @@ async def send_message(text: str, title: str = "") -> str:
         return json.dumps({"error": "no push channel configured on the server"})
     results = await run_in_threadpool(notify.send_all, title, text)
     return json.dumps(results, ensure_ascii=False)
+
+
+# --- ECG and heart rate notifications -----------------------------------------
+#
+# One Health Auto Export automation each (JSON); the ingest service stores
+# every recording or notification as <DIR>/<start time>.json.
+
+
+def _records_json(records: list[dict], days: int) -> str:
+    return json.dumps(
+        {"records": records, "days_requested": days, "days_returned": len(records)},
+        indent=2,
+        ensure_ascii=False,
+    )
+
+
+@mcp.tool()
+def get_ecg(days: int = 90) -> str:
+    """ECG recordings taken with the Apple Watch ECG app in the last N days, oldest first.
+
+    Each record has ``start``, ``classification`` ("Sinus Rhythm",
+    "Atrial Fibrillation", "Inconclusive", ...), ``average_hr`` (bpm) and,
+    when present, ``severity``. The voltage samples are not kept.
+    """
+    cutoff = _now() - timedelta(days=days)
+    records = []
+    for start, ecg in _load_events(ECG_DIR):
+        if start < cutoff:
+            continue
+        rec = {"start": start.strftime("%Y-%m-%d %H:%M"), "classification": ecg.get("classification")}
+        if (hr := _quantity(ecg.get("averageHeartRate"))) is not None:
+            rec["average_hr"] = hr["value"]
+        if ecg.get("severity"):
+            rec["severity"] = ecg["severity"]
+        records.append(rec)
+    return _records_json(records, days)
+
+
+def _sample_values(samples, field: str) -> list[float]:
+    if not isinstance(samples, list):
+        return []
+    return [
+        float(item[field])
+        for item in samples
+        if isinstance(item, dict) and isinstance(item.get(field), int | float)
+    ]
+
+
+@mcp.tool()
+def get_heart_rate_notifications(days: int = 30) -> str:
+    """High, low and irregular-rhythm heart rate notifications from the last N days.
+
+    Each record has ``start``, ``end``, ``kind`` ("high", "low" or
+    "irregular_rhythm"), ``threshold_bpm`` for high and low notifications,
+    and the heart rate samples behind it summarised as ``hr_min``,
+    ``hr_avg``, ``hr_max`` (bpm) plus ``hrv_avg_ms`` when present.
+    """
+    cutoff = _now() - timedelta(days=days)
+    records = []
+    for start, note in _load_events(HR_NOTIFICATIONS_DIR):
+        if start < cutoff:
+            continue
+        end = _parse_workout_time(note.get("end"))
+        rates = _sample_values(note.get("heartRate"), "hr")
+        rec = {"start": start.strftime("%Y-%m-%d %H:%M"), "end": end.strftime("%Y-%m-%d %H:%M") if end else None}
+        threshold = note.get("threshold")
+        if isinstance(threshold, int | float):
+            # High and low notifications carry the threshold they crossed.
+            rec["kind"] = "low" if rates and sum(rates) / len(rates) < threshold else "high"
+            rec["threshold_bpm"] = round(float(threshold), 1)
+        else:
+            rec["kind"] = "irregular_rhythm"
+        if rates:
+            rec.update(hr_min=min(rates), hr_avg=round(sum(rates) / len(rates), 1), hr_max=max(rates))
+        if hrv := _sample_values(note.get("heartRateVariation"), "hrv"):
+            rec["hrv_avg_ms"] = round(sum(hrv) / len(hrv), 1)
+        records.append(rec)
+    return _records_json(records, days)
 
 
 # --- Sleep times -------------------------------------------------------------
@@ -1071,6 +1156,8 @@ def build_bundle(days: int = 14) -> dict:
         "daily_vitals": json.loads(get_daily_vitals(days=days)),
         "daily_fitness": json.loads(get_daily_fitness(days=days)),
         "workouts": json.loads(get_workouts(days=days)),
+        "ecg": json.loads(get_ecg(days=days)),
+        "heart_rate_notifications": json.loads(get_heart_rate_notifications(days=days)),
         "other_metrics": other_metrics(days=min(days, 7)),
         "report_7_days_ago": previous if previous.get("date") else None,
     }

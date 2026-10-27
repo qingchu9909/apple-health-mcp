@@ -104,7 +104,7 @@ if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
   useradd --system --home-dir "$BASE" --no-create-home --shell /usr/sbin/nologin "$SERVICE_USER"
 fi
 install -d -m 755 "$BASE"
-install -d -m 750 -o "$SERVICE_USER" -g "$SERVICE_USER" "$BASE/data" "$BASE/reports" "$BASE/workouts" "$BASE/sleep"
+install -d -m 750 -o "$SERVICE_USER" -g "$SERVICE_USER" "$BASE/data" "$BASE/reports" "$BASE/workouts" "$BASE/sleep" "$BASE/ecg" "$BASE/hr-notifications"
 ok "系统用户 $SERVICE_USER，数据目录 $BASE"
 
 step "代码"
@@ -155,6 +155,8 @@ set_env DATA_DIR "$BASE/data"
 set_env REPORTS_DIR "$BASE/reports"
 set_env WORKOUTS_DIR "$BASE/workouts"
 set_env SLEEP_DIR "$BASE/sleep"
+set_env ECG_DIR "$BASE/ecg"
+set_env HR_NOTIFICATIONS_DIR "$BASE/hr-notifications"
 set_env USER_TZ "$USER_TZ"
 for key in TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID SERVERCHAN_SENDKEY PUSHPLUS_TOKEN; do
   if [[ -n ${!key:-} ]]; then set_env "$key" "${!key}"; fi
