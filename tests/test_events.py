@@ -1,10 +1,11 @@
 """Tests for the ECG, heart rate notification and State of Mind tools."""
 import json
+import shutil
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from .conftest import _import_server
+from .conftest import FIXTURES, _import_server
 
 TZ = ZoneInfo("Asia/Shanghai")
 
@@ -94,3 +95,36 @@ def test_the_bundle_carries_ecg_and_notifications(tmp_data_dir: Path, monkeypatc
     assert bundle["ecg"]["days_returned"] == 1
     assert bundle["heart_rate_notifications"]["records"] == []
     assert bundle["state_of_mind"]["records"] == []
+
+
+def test_clients_with_the_old_tool_list_still_reach_ecg_and_moods(tmp_data_dir: Path, monkeypatch):
+    # Claude's connector may keep the tool list from before get_ecg and
+    # get_state_of_mind existed; list_metrics, get_metric and get_summary
+    # lead to the same data.
+    shutil.copy(FIXTURES / "sample_clean.csv", tmp_data_dir / "health_1.csv")
+    server = _server(tmp_data_dir, monkeypatch)
+    start = (datetime.now(TZ) - timedelta(days=1)).replace(second=0, microsecond=0)
+    _write(Path(server.ECG_DIR), "a", {"start": _stamp(start), "classification": "Sinus Rhythm", "averageHeartRate": 61})
+    _write(Path(server.STATE_OF_MIND_DIR), "m1", {
+        "id": "m1", "start": start.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "kind": "momentary_emotion", "valence": 0.0, "valenceClassification": "neutral",
+        "labels": ["tired"], "associations": ["hobbies"],
+    })
+
+    listing = server.list_metrics()
+    assert "Step Count (count)" in listing
+    assert f"ecg (ECG recordings): 1, latest {start:%Y-%m-%d %H:%M}" in listing
+    assert f"state_of_mind (logged moods and emotions): 1, latest {start:%Y-%m-%d %H:%M}" in listing
+    assert "heart_rate_notifications (high, low and irregular heart rate notifications): 0" in listing
+
+    for name in ("ecg", "ECG", "心電圖"):
+        assert json.loads(server.get_metric(name))["records"][0]["classification"] == "Sinus Rhythm"
+    for name in ("state_of_mind", "State of Mind", "mood", "心情"):
+        assert json.loads(server.get_metric(name, days=7))["records"][0]["labels"] == ["tired"]
+    assert json.loads(server.get_metric("Heart Rate Notifications"))["records"] == []
+    assert "not found" in server.get_metric("Blood Pressure")
+
+    summary = server.get_summary(days=7)
+    assert f'ECG recordings: 1, latest {start:%Y-%m-%d %H:%M} (details: get_metric("ecg"))' in summary
+    assert 'logged moods and emotions: 1' in summary
+    assert "heart rate notifications" not in summary

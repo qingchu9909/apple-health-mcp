@@ -455,12 +455,11 @@ def _format_records(records: list[dict], days_requested: int) -> str:
 
 @mcp.tool()
 def list_metrics() -> str:
-    """List all available health metrics that have data."""
+    """List all available health metrics that have data, then the ECG recordings,
+    heart rate notifications and logged moods on record (read those with get_metric)."""
     df = load_all_csv()
-    if df.empty:
-        return _no_data()
-    cols = [c for c in df.columns if c != "Date/Time" and df[c].notna().any()]
-    return "\n".join(cols)
+    cols = [c for c in df.columns if c != "Date/Time" and df[c].notna().any()] if not df.empty else [_no_data()]
+    return "\n".join([*cols, "", "Also on record, read with get_metric(<name>):", *_event_metric_lines()])
 
 
 @mcp.tool()
@@ -479,8 +478,13 @@ def get_latest() -> str:
 def get_metric(metric: str, days: int = 30) -> str:
     """Get a specific health metric over a date range.
 
-    Returns at most the 500 most recent rows; narrow ``days`` for older data.
+    ``metric`` is a name from list_metrics: a column such as "Step Count
+    (count)", or "ecg", "heart_rate_notifications" or "state_of_mind" (logged
+    moods). Returns at most the 500 most recent rows; narrow ``days`` for
+    older data.
     """
+    if (name := _event_metric(metric)) is not None:
+        return _EVENT_METRICS[name][2](days=days)
     df = load_all_csv()
     if df.empty:
         return _no_data()
@@ -518,6 +522,10 @@ def get_summary(days: int = 7) -> str:
                 f"{col}: avg={vals.mean():.2f}, min={vals.min():.2f}, "
                 f"max={vals.max():.2f}, last={vals.iloc[-1]:.2f}"
             )
+    for name, (directory, label, _) in _EVENT_METRICS.items():
+        starts = [start for start, _ in _load_events(directory) if start >= cutoff]
+        if starts:
+            out.append(f"{label}: {len(starts)}, latest {starts[-1]:%Y-%m-%d %H:%M} (details: get_metric(\"{name}\"))")
     return "\n".join(out)
 
 
@@ -1040,6 +1048,50 @@ def get_state_of_mind(days: int = 14) -> str:
                 rec[key] = entry[key]
         records.append(rec)
     return _records_json(records, days)
+
+
+# Claude's connectors keep the tool list they first saw (anthropics/claude-ai-mcp
+# issues #45 and #137), so a client added before the three tools above existed
+# cannot call them. list_metrics, get_metric and get_summary, which every client
+# has, point to them and serve them too.
+_EVENT_METRICS = {
+    "ecg": (ECG_DIR, "ECG recordings", get_ecg),
+    "heart_rate_notifications": (
+        HR_NOTIFICATIONS_DIR, "high, low and irregular heart rate notifications", get_heart_rate_notifications,
+    ),
+    "state_of_mind": (STATE_OF_MIND_DIR, "logged moods and emotions", get_state_of_mind),
+}
+_EVENT_ALIASES = {
+    "electrocardiogram": "ecg",
+    "心电图": "ecg",
+    "心電圖": "ecg",
+    "heart_rate_notification": "heart_rate_notifications",
+    "心率通知": "heart_rate_notifications",
+    "mood": "state_of_mind",
+    "moods": "state_of_mind",
+    "emotion": "state_of_mind",
+    "emotions": "state_of_mind",
+    "心情": "state_of_mind",
+    "情绪": "state_of_mind",
+    "情緒": "state_of_mind",
+    "心理状态": "state_of_mind",
+    "心理狀態": "state_of_mind",
+}
+
+
+def _event_metric(name: str) -> str | None:
+    key = re.sub(r"[\s-]+", "_", str(name).strip().lower())
+    key = _EVENT_ALIASES.get(key, key)
+    return key if key in _EVENT_METRICS else None
+
+
+def _event_metric_lines() -> list[str]:
+    lines = []
+    for name, (directory, label, _) in _EVENT_METRICS.items():
+        events = _load_events(directory)
+        latest = f", latest {events[-1][0]:%Y-%m-%d %H:%M}" if events else ""
+        lines.append(f"{name} ({label}): {len(events)}{latest}")
+    return lines
 
 
 # --- Sleep times -------------------------------------------------------------

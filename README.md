@@ -76,15 +76,20 @@ scheduled remote agent that calls `save_health_report` every morning.
 
 | Tool | Description | Default window |
 | --- | --- | --- |
-| `list_metrics` | Lists every health metric with at least one data point. | n/a |
+| `list_metrics` | Lists every health metric with at least one data point, then how many ECG recordings, heart rate notifications and logged moods are on record. | n/a |
 | `get_latest` | Most recent non-empty snapshot across all metrics. | n/a |
-| `get_metric` | Time series for a single metric. | 30 days |
+| `get_metric` | Time series for a single metric; `ecg`, `heart_rate_notifications` and `state_of_mind` return what the dedicated tools return. | 30 days |
 | `get_summary` | avg/min/max/last for the headline metrics. | 7 days |
 | `get_sleep` | Raw sleep + wrist-temp rows. | 14 days |
 | `get_fitness` | Raw fitness + HR rows. | 14 days |
 
 The CSV exports are daily aggregates with 100+ columns, so any of those
 columns can be queried via `get_metric` even if no dedicated tool wraps them.
+
+Claude's connectors can keep the tool list they first saw, so a connector
+added before `get_ecg`, `get_heart_rate_notifications` and
+`get_state_of_mind` existed may not offer them; `list_metrics`, `get_metric`
+and `get_summary` lead to the same data.
 
 **HTTP API for scheduled routines.** Claude's scheduled cloud routines cannot
 attach a custom connector, so the MCP server also exposes two plain HTTPS
