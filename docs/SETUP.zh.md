@@ -41,7 +41,9 @@ curl -fsSL https://raw.githubusercontent.com/qingchu9909/apple-health-mcp/main/d
 
 ## 2. iPhone：Health Auto Export
 
-打开 App → 侧边栏 **Automations** → **New Automation**，建两个自动化。两个都是 **REST API** 类型，URL 和 Header 一样（App 是繁体中文界面时，Header 名和值分别填在「金鑰」和「數值」两格，「加入標題列」是再加一行）：
+**先把这个 App 的语言改成英文，并一直保持英文。** App 用中文时，导出的表格连列名也是中文（「日期/時間」「步數」…），服务器只认英文列名，整份都会读不进去。在 iPhone「设置 → App → Health Auto Export → 语言」选 English；没有「语言」这一项的话，先到「设置 → 通用 → 语言与地区」加入 English，主要语言保持中文。手机其他地方不受影响。
+
+然后打开 App → 侧边栏 **Automations** → **New Automation**，建两个自动化。两个都是 **REST API** 类型，URL 和 Header 一样：
 
 | 项目 | 填写 |
 | --- | --- |
@@ -116,6 +118,7 @@ claude.ai（网页或手机 App）→ **设置 → 连接器 → 添加自定义
 | 现象 | 原因和办法 |
 | --- | --- |
 | Health Auto Export 报 401 | Header 值不对。运行 `bash /opt/health/app/deploy/status.sh` 看原因：缺少 Header 是名字没填成 `Authorization`；「got N characters」是令牌复制得不完整；提到 REPORT_API_TOKEN / MCP_PATH_TOKEN 是贴成了另外两组里的令牌 |
+| Claude 说没有健康数据，或者只查得到运动记录 | Health Auto Export 用中文时导出的列名也是中文，服务器读不了（`status.sh` 会显示「Claude 读不了」）。把这个 App 的语言改成 English（见第 2 节），再用 Manual Export 把这些天重新导出一次 |
 | 一直没有新数据 | 自动化只在手机解锁时运行；检查后台 App 刷新、加小组件，在 App 的 Activity Logs 里看报错 |
 | 日报说「昨晚睡眠还没同步」 | 定时任务比你解锁手机还早，把运行时间往后调 |
 | 连接器显示 0 个工具 | URL 里的令牌抄错，或服务器上 `health-mcp` 没在运行 |

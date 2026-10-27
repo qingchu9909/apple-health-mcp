@@ -256,6 +256,10 @@ The second call should return a JSON list of the six tools.
 
 ### 5. iPhone — Health Auto Export
 
+Run the app in English. It names the CSV columns in its own language and the
+server only reads the English names, so on a phone set to another language pick
+English under **Settings → Apps → Health Auto Export → Language**.
+
 Open the app, go to **Automations**, and add a REST API automation:
 
 | Field | Value |
@@ -324,6 +328,7 @@ updating the URL in both Health Auto Export and the Claude connector.
 | `421 Misdirected Request` from MCP | HTTP/2 enabled on the MCP vhost. | Remove `http2` from `listen 443 ssl` for the MCP server block. |
 | `Missing column ... 'Date/Time'` | A CSV is wrapped in a multipart envelope. | Already handled by `_read_csv_tolerant`; if you see it, check the file is actually CSV-shaped. |
 | Tools return *"No health data available yet."* | No CSVs in `DATA_DIR`. | Confirm Health Auto Export has run successfully. |
+| Tools return *"No readable health data"*, or only workouts show up | Health Auto Export named the CSV columns in another language (e.g. `日期/時間` instead of `Date/Time`). | Set the app's language to English (see step 5) and export the missing days again. `status.sh` counts the unreadable files. |
 | Connector shows zero tools | Server unreachable, wrong path, or DNS-rebinding rejection. | Check `error.log`; confirm `mcp.settings.transport_security.enable_dns_rebinding_protection = False`. |
 
 Useful commands:

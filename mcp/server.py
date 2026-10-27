@@ -78,6 +78,9 @@ def _dir_signature() -> tuple:
 
 
 _cache: tuple[tuple, pd.DataFrame] | None = None
+# Why each file in the cached signature could not be read, so the tools can
+# say why data is missing instead of only that it is.
+_unreadable: dict[str, str] = {}
 _load_lock = threading.Lock()
 # Health Auto Export uploads every hour or so. Past this many files the loader
 # folds them into one, so a cache miss never has to re-read thousands.
@@ -104,6 +107,15 @@ def _read_csv_tolerant(path: pathlib.Path) -> pd.DataFrame:
             if cut != -1:
                 tail = tail[:cut]
             raw = tail.strip()
+    header = raw.split(b"\n", 1)[0]
+    if b"Date/Time" not in header:
+        first = header.split(b",", 1)[0].decode("utf-8", "replace").strip('\ufeff"\r ')
+        raise ValueError(
+            f"its header starts with {first!r} instead of 'Date/Time': Health Auto Export names "
+            "the columns in the app's language, and only English names can be read. Set the "
+            "app's language to English (iPhone Settings > Apps > Health Auto Export > Language), "
+            "then export the missing days again"
+        )
     df = pd.read_csv(io.BytesIO(raw), parse_dates=["Date/Time"])
     df["Date/Time"] = _naive_local(df["Date/Time"])
     return _normalize_units(df)
@@ -209,7 +221,7 @@ def _compact(files: list[pathlib.Path]) -> None:
 
 
 def load_all_csv() -> pd.DataFrame:
-    global _cache
+    global _cache, _unreadable
     with _load_lock:
         files = sorted(DATA_DIR.glob("health_*.csv"))
         if len(files) > _COMPACT_AFTER:
@@ -220,16 +232,36 @@ def load_all_csv() -> pd.DataFrame:
         sig = _dir_signature()
         if _cache is not None and _cache[0] == sig:
             return _cache[1]
-        dfs = []
+        dfs, unreadable = [], {}
         for name, _mtime, _size in sig:
             f = DATA_DIR / name
             try:
                 dfs.append(_read_csv_tolerant(f))
             except Exception as e:
                 print(f"[load_all_csv] skipping {f.name}: {e}", flush=True)
+                unreadable[name] = str(e)
         df = _merge_exports(dfs) if dfs else pd.DataFrame()
-        _cache = (sig, df)
+        _cache, _unreadable = (sig, df), unreadable
         return df
+
+
+def _upload_problem() -> str | None:
+    """Why the newest health-metrics upload could not be read, if it could not.
+
+    Older unreadable files stop mattering once a newer upload reads fine, so
+    only the newest is checked. Call after load_all_csv().
+    """
+    if _cache is None or not _cache[0]:
+        return None
+    newest = _cache[0][-1][0]
+    if newest not in _unreadable:
+        return None
+    return f"The newest health-metrics upload ({newest}) could not be read: {_unreadable[newest]}."
+
+
+def _no_data() -> str:
+    problem = _upload_problem()
+    return f"No readable health data. {problem}" if problem else "No health data available yet."
 
 
 # --- Daily-aggregation helpers used by the structured tools below -----------
@@ -385,15 +417,14 @@ def _records_from_frame(daily: pd.DataFrame) -> list[dict]:
 
 
 def _format_records(records: list[dict], days_requested: int) -> str:
-    return json.dumps(
-        {
-            "records": records,
-            "days_requested": days_requested,
-            "days_returned": len(records),
-        },
-        indent=2,
-        default=str,
-    )
+    result = {
+        "records": records,
+        "days_requested": days_requested,
+        "days_returned": len(records),
+    }
+    if problem := _upload_problem():
+        result["problem"] = problem
+    return json.dumps(result, indent=2, default=str)
 
 
 # --- Tools -------------------------------------------------------------------
@@ -404,7 +435,7 @@ def list_metrics() -> str:
     """List all available health metrics that have data."""
     df = load_all_csv()
     if df.empty:
-        return "No health data available yet."
+        return _no_data()
     cols = [c for c in df.columns if c != "Date/Time" and df[c].notna().any()]
     return "\n".join(cols)
 
@@ -414,7 +445,7 @@ def get_latest() -> str:
     """Get the most recent health data snapshot."""
     df = load_all_csv()
     if df.empty:
-        return "No health data available yet."
+        return _no_data()
     row = df.dropna(how="all", subset=[c for c in df.columns if c != "Date/Time"]).iloc[-1]
     data = row.dropna().to_dict()
     data["Date/Time"] = str(data["Date/Time"])
@@ -429,7 +460,7 @@ def get_metric(metric: str, days: int = 30) -> str:
     """
     df = load_all_csv()
     if df.empty:
-        return "No health data available yet."
+        return _no_data()
     if metric not in df.columns:
         return f"Metric '{metric}' not found. Use list_metrics first."
     cutoff = _now() - timedelta(days=days)
@@ -445,7 +476,7 @@ def get_summary(days: int = 7) -> str:
     """Get a health summary for the past N days."""
     df = load_all_csv()
     if df.empty:
-        return "No health data available yet."
+        return _no_data()
     cutoff = _now() - timedelta(days=days)
     recent = df[df["Date/Time"] >= cutoff]
     summary_cols = [
@@ -472,7 +503,7 @@ def get_sleep(days: int = 14) -> str:
     """Get sleep analysis for the past N days."""
     df = load_all_csv()
     if df.empty:
-        return "No health data available yet."
+        return _no_data()
     cutoff = _now() - timedelta(days=days)
     sleep_cols = [c for c in df.columns if "Sleep" in c or "Wrist Temperature" in c]
     recent = df[df["Date/Time"] >= cutoff][["Date/Time"] + sleep_cols].dropna(
@@ -486,7 +517,7 @@ def get_fitness(days: int = 14) -> str:
     """Get fitness metrics (steps, HRV, heart rate, VO2 max) for past N days."""
     df = load_all_csv()
     if df.empty:
-        return "No health data available yet."
+        return _no_data()
     cutoff = _now() - timedelta(days=days)
     fitness_cols = [
         "Step Count (count)", "Heart Rate [Min] (count/min)", "Heart Rate [Max] (count/min)",
@@ -895,11 +926,14 @@ def _freshness() -> dict:
         if files
         else None
     )
-    return {
+    result = {
         "last_upload": last_upload,
         "latest_metric_row": str(df["Date/Time"].max()) if not df.empty else None,
         "latest_workout_start": workouts[-1][0].strftime("%Y-%m-%d %H:%M") if workouts else None,
     }
+    if problem := _upload_problem():
+        result["problem"] = problem
+    return result
 
 
 # Columns already summarised by the structured tools above.

@@ -19,22 +19,39 @@ echo "${uploads:-还没有收到过上传}"
 last=$(grep -E ' (✔|✘) ' <<<"$uploads" | tail -n 1)
 when=$(awk '{print $1, $2}' <<<"$last")
 if [[ $last == *✔* ]]; then
-  echo "→ 现在正常：最新一次上传（$when）成功，更早的 ✘ 不用管"
+  echo "→ 上传正常：最新一次（$when）成功，更早的 ✘ 不用管"
 elif [[ -n $last ]]; then
   echo "→ 最新一次上传（$when）没成功，原因见上"
 fi
 
 echo
 echo "== 已收到的数据 =="
+# Claude only reads a file whose header names the columns in English, which
+# Health Auto Export writes only while the app itself runs in English.
 csvs=("$BASE"/data/health_*.csv)
+readable=()
+unreadable=()
+for f in "${csvs[@]}"; do
+  if [[ $(head -n 1 "$f") == *Date/Time* ]]; then readable+=("$f"); else unreadable+=("$f"); fi
+done
 days=""
-if ((${#csvs[@]})); then
-  days=$(tail -q -n +2 "${csvs[@]}" | tr -d '"' | cut -c1-10 | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' | sort -u)
+if ((${#readable[@]})); then
+  days=$(tail -q -n +2 "${readable[@]}" | tr -d '"' | cut -c1-10 | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' | sort -u)
 fi
 if [[ -n $days ]]; then
   echo "健康指标：$(wc -l <<<"$days") 天（$(head -n 1 <<<"$days") 到 $(tail -n 1 <<<"$days")）"
 else
   echo "健康指标：还没有"
+fi
+if ((${#unreadable[@]})); then
+  first=$(head -n 1 "${unreadable[-1]}" | cut -d, -f1 | tr -d '"\r')
+  first=${first#$'\xef\xbb\xbf'}
+  echo "⚠ 有 ${#unreadable[@]} 个健康指标文件 Claude 读不了：表头是「$first」，不是「Date/Time」"
+  if [[ ${unreadable[-1]} == "${csvs[-1]}" ]]; then
+    echo "→ 最新一次上传也读不了：把 Health Auto Export 的语言改成 English，再重新导出这些天"
+  else
+    echo "→ 之后收到的都读得了，这些旧文件不用管"
+  fi
 fi
 workouts=("$BASE"/workouts/*.json)
 if ((${#workouts[@]})); then
