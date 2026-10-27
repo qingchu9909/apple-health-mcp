@@ -83,3 +83,20 @@ def test_few_files_are_left_alone(tmp_data_dir: Path):
     server.load_all_csv()
     assert len(list(tmp_data_dir.glob("health_*.csv"))) == 3
     assert not (tmp_data_dir / "archive").exists()
+
+
+def test_archived_uploads_are_kept_for_a_month(tmp_data_dir: Path):
+    server = _import_server(tmp_data_dir)
+    _write_exports(tmp_data_dir, server._COMPACT_AFTER + 1)
+    newest = max(f.stat().st_mtime for f in tmp_data_dir.glob("health_*.csv"))
+    archive = tmp_data_dir / "archive"
+    archive.mkdir()
+    for name, age_days in (("health_old.csv", 31), ("health_recent.csv", 29)):
+        (archive / name).write_text("Date/Time,Step Count (count)\n")
+        os.utime(archive / name, (newest - age_days * 86400, newest - age_days * 86400))
+
+    server.load_all_csv()
+
+    assert not (archive / "health_old.csv").exists()
+    assert (archive / "health_recent.csv").exists()
+    assert len(list(archive.glob("health_2026*.csv"))) == server._COMPACT_AFTER + 1

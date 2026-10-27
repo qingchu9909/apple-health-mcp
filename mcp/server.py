@@ -114,6 +114,9 @@ _load_lock = threading.Lock()
 # Health Auto Export uploads every hour or so. Past this many files the loader
 # folds them into one, so a cache miss never has to re-read thousands.
 _COMPACT_AFTER = 48
+# How long folded-in uploads stay in DATA_DIR/archive. Minute-by-minute exports
+# of yesterday and today run to a few hundred KB an hour, so they can't stay forever.
+_ARCHIVE_KEEP = timedelta(days=30)
 
 
 def _read_csv_tolerant(path: pathlib.Path) -> pd.DataFrame:
@@ -273,8 +276,8 @@ def _compact(files: list[pathlib.Path]) -> None:
 
     The result is written next to the newest input as ``<name>_merged.csv``,
     which sorts right after it, so later uploads still win. Raw uploads move
-    to ``DATA_DIR/archive`` (kept for recovery, never read) and earlier merged
-    files are deleted. A crash part-way leaves older duplicates behind, which
+    to ``DATA_DIR/archive`` (kept for recovery for _ARCHIVE_KEEP, never read)
+    and earlier merged files are deleted. A crash part-way leaves older duplicates behind, which
     the newest-wins merge already tolerates.
     """
     frames, inputs, unreadable = [], [], []
@@ -308,6 +311,10 @@ def _compact(files: list[pathlib.Path]) -> None:
             f.unlink(missing_ok=True)
         else:
             f.rename(archive / f.name)
+    keep_after = mtime_ns / 1e9 - _ARCHIVE_KEEP.total_seconds()
+    for old in archive.glob("health_*.csv"):
+        if old.stat().st_mtime < keep_after:
+            old.unlink(missing_ok=True)
 
 
 def load_all_csv() -> pd.DataFrame:
