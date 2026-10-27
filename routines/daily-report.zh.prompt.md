@@ -31,18 +31,21 @@ mkdir -p /tmp/health && curl -fsS --retry 3 --retry-delay 10 --max-time 120 \
 `bundle.json` 的结构（日期都已按用户时区）：
 
 - `today`、`generated_at`、`timezone`
-- `freshness`：`last_upload`（手机最后一次上传时间）、`latest_metric_row`、`latest_workout_start`
-- `daily_sleep.records[]`：每晚一条，`date` 是醒来那天。字段 `total_h`、`core_h`、`deep_h`、`rem_h`、`awake_h`、`in_bed_h`、`wrist_temp_c`（睡眠手腕温度，绝对值 °C）
+- `freshness`：`last_upload`（手机最后一次上传时间）、`latest_metric_row`、`latest_workout_start`、`latest_sleep_night`
+- `daily_sleep.records[]`：每晚一条，`date` 是醒来那天。字段 `total_h`、`core_h`、`deep_h`、`rem_h`、`awake_h`、`in_bed_h`、`wrist_temp_c`（睡眠手腕温度，绝对值 °C），以及 `bedtime`（入睡）、`wake_time`（醒来）、`in_bed_start`、`in_bed_end`，格式 `YYYY-MM-DD HH:MM`
 - `daily_vitals.records[]`：每天一条。`resting_hr`、`hrv_ms`（SDNN 日均值）、`hr_min/hr_avg/hr_max`、`respiratory_rate`、`blood_oxygen_pct`，以及有动态血糖仪时的 `glucose_night_*`
 - `daily_fitness.records[]`：每天一条。`steps`、`distance_km`、`active_energy_kj`、`exercise_min`、`stand_min`、`flights`、`walking_speed_kmh_avg`、`walking_hr_avg`、`vo2_max`
 - `baselines.baselines[]`：近 30 天每个核心指标的 `p10/p50/p90`、最近一天的值 `yesterday`（及 `yesterday_date`）、`trend_7d_vs_30d_pct`。步数、能量这类累计值已排除今天未完成的数据
 - `workouts.records[]`：每次运动一条：`name`（类型）、`start/end`、`duration_min`、`distance`、`active_energy`、`hr_avg/hr_max`、`elevation_up`、`temperature` 等，数值是 `{"value", "unit"}`
+- `ecg.records[]`：手表「心電圖」App 量的每一次：`start`、`classification`（Sinus Rhythm 窦性心律 / Atrial Fibrillation 房颤 / Inconclusive… 无法判断 / Poor Recording 记录不良等）、`average_hr`、`severity`
+- `heart_rate_notifications.records[]`：手表弹出的心率提醒：`kind`（high 过高 / low 过低 / irregular_rhythm 心律不齐）、`start`/`end`、`threshold_bpm`、`hr_min`/`hr_avg`/`hr_max`
+- `state_of_mind.records[]`：用户自己记下的心情（手表不会自动测）：`time`、`kind`（daily_mood 整天心情 / momentary_emotion 某一刻的情绪）、`valence`（-1 很不愉快到 1 很愉快）、`feeling`、`labels`（感受，如 drained 疲惫、anxious 焦虑）、`associations`（跟什么有关，如 work 工作、family 家人、hobbies 嗜好）
 - `other_metrics`：上面没覆盖、但近 7 天有数据的其他指标，`{指标名: {日期: 当天值}}`，例如日照时间、环境噪音、潜水深度、水温、步行稳定性等
 - `report_7_days_ago`：7 天前的日报（没有则为 null）
 
 ## 第 2 步：先看数据新不新
 
-- 今天的 `daily_sleep` 记录（`date` 等于 `today`）不存在：说明昨晚睡眠还没同步上来（手机要解锁后才会上传）。日报照写，睡眠部分用最近一晚并注明日期，并在开头加一行提醒：「⚠️ 昨晚的睡眠还没同步，解锁一下 iPhone 让 Health Auto Export 上传，稍后可以在 Claude 里问我补看。」
+- 今天的 `daily_sleep` 记录（`date` 等于 `today`）不存在：可能是昨晚的睡眠还没同步上来（手机要解锁后才会上传），也可能昨晚没戴表睡。日报照写，睡眠部分用最近一晚并注明日期，并在开头加一行提醒：「⚠️ 昨晚没有睡眠记录：没戴表睡的话可以忽略；戴了的话解锁一下 iPhone 让它上传，稍后可以在 Claude 里问我补看。」
 - `last_upload` 比 `generated_at` 早超过 24 小时：开头提醒「⚠️ 手机已经 X 小时没上传数据」，并建议检查 Health Auto Export 的自动化是否还在运行（把它的小组件放到主屏幕、充电时打开一下 App 最有效）。
 - 完全没有数据：只发一条简短的说明，说明可能原因，不要编造数字。
 
@@ -56,9 +59,12 @@ mkdir -p /tmp/health && curl -fsS --retry 3 --retry-delay 10 --max-time 120 \
 - 手腕温度：昨晚 `wrist_temp_c` 减去之前 7 晚的均值。
 - 呼吸频率：昨晚与之前 7 晚均值的差。
 - 睡眠：总时长与近 7 晚中位数的差；深睡+REM 占总睡眠的百分比。
+- 作息：昨晚的入睡和醒来时间；近 7 晚入睡时间的中位数和最早、最晚（换算成分钟再算，凌晨的时间加 24 小时，避免跨午夜算错）。
 - 血氧：昨晚和前一晚的 `blood_oxygen_pct`。
 - 昨天的活动：`date == today - 1` 那条 `daily_fitness`。活动能量换算成千卡（kJ ÷ 4.184）。再列出近 7 天每天的锻炼分钟数，看负荷节奏（连续高负荷 / 减量 / 混合）。
 - 运动：近 7 天的 `workouts`，昨天和今天的单独拎出来。
+- 心电图和心率提醒：近 7 天的记录，昨天和今天的单独拎出来。
+- 心情：近 7 天的记录；最近一条；有 3 条以上时算 valence 均值。
 - `other_metrics` 里明显偏离自身近期水平、或本身值得一提的项（例如有潜水记录、日照很少、噪音暴露偏高）。
 
 ## 第 4 步：按阈值标黄 / 标红
@@ -72,6 +78,8 @@ mkdir -p /tmp/health && curl -fsS --retry 3 --retry-delay 10 --max-time 120 \
 - **深睡+REM 占比**：低于 30% → 黄；低于 25% → 红。必须注明 Apple 会低估深睡。
 - **血氧（夜间均值）**：低于 94% → 黄；连续 2 晚低于 92% → 红。单晚偏低几乎都是佩戴/动作造成的，不单独标红。
 - **呼吸频率**：比 7 晚均值高 2 次/分 → 黄；高 3 次/分 → 红。
+- **心率提醒**：近 2 天有 high 或 low → 黄；有 irregular_rhythm → 红。
+- **心电图**：近 7 天有 Atrial Fibrillation → 红，建议带着这次记录找医生看。Inconclusive、Poor Recording 不标色，只在备注提一句可以重量一次。
 - **夜间血糖（只有戴动态血糖仪的晚上才看）**：均值 > 6.1 mmol/L，或 3.9–7.8 范围内时间 < 90% → 黄；均值 > 7.0，或连续 2 晚黄 → 红。
 
 **今日状态**（唯一的「评分」，机械判断）：
@@ -99,13 +107,16 @@ mkdir -p /tmp/health && curl -fsS --retry 3 --retry-delay 10 --max-time 120 \
 3. {第三个}
 
 ## 昨晚睡眠
-总睡眠 {X.X} 小时（比近 7 晚中位数 {±Δ}）。核心 {a} / 深睡 {b} / REM {c} / 清醒 {d} 小时，深睡+REM 占 {p}%。手腕温度比 7 晚均值 {±0.XX} °C。{1–2 句解读，传感器不准的地方要留余地；联系最近的规律，例如高强度训练后的短觉}
+{HH:MM} 入睡，{HH:MM} 醒来（近 7 晚入睡中位数 {HH:MM}）。总睡眠 {X.X} 小时（比近 7 晚中位数 {±Δ}）。核心 {a} / 深睡 {b} / REM {c} / 清醒 {d} 小时，深睡+REM 占 {p}%。手腕温度比 7 晚均值 {±0.XX} °C。{1–2 句解读，传感器不准的地方要留余地；联系最近的规律，例如高强度训练后的短觉}
 
 ## 心肺与恢复
-HRV {X} ms（7 天均值 {Y} ms，{±Z} ms，约 {±k} 个 SD）。静息心率 {A} 次/分（30 天中位数 {B}）。呼吸频率 {R} 次/分，夜间血氧 {S}%。{1–2 句：恢复得好不好、有没有压力或生病前兆的迹象}
+HRV {X} ms（7 天均值 {Y} ms，{±Z} ms，约 {±k} 个 SD）。静息心率 {A} 次/分（30 天中位数 {B}）。呼吸频率 {R} 次/分，夜间血氧 {S}%。{近 7 天有心电图或心率提醒时，逐条写时间和结果}{1–2 句：恢复得好不好、有没有压力或生病前兆的迹象}
 
 ## 昨天的活动和运动
 步数 {N}，锻炼 {M} 分钟，活动能量 {K} 千卡，爬楼 {F} 层。{逐条列昨天的运动：类型、时长、距离、平均/最高心率}。{近 7 天的负荷节奏，一两句}
+
+## 心情
+{只在近 7 天有心情记录时出现：最近一条的时间、感受和跟什么有关；有几条时说说这几天的走向。1–2 句，不揣测原因，不做心理诊断}
 
 ## 其他值得注意的
 {只在 other_metrics 或运动里确实有值得说的东西时出现，例如潜水深度和水温、日照、噪音暴露；否则整段省略}
@@ -147,6 +158,8 @@ curl -sS --retry 2 --max-time 120 -w '\nHTTP %{http_code}\n' \
 - **手腕温度**：只在睡眠中测（需要开启睡眠专注模式且睡够 4 小时）。饮食、运动、饮酒、室温、生理周期、生病都会影响；连续几晚升高可能早于生病症状出现，超过 +0.5 °C 接近发烧级别。
 - **静息心率**：苹果取清醒且静止时的最低心率，不含睡眠时段，当天晚些时候可能修正。单独看是弱信号，持续 2 天以上升高才有意义。
 - **血氧**：夜间间歇测量，对表带松紧、动作、手冷、纹身很敏感。**单次偏低几乎都是伪差**，看多晚的规律。
+- **心电图**：手表是单导联，只能区分窦性心律和房颤等少数结果，发现不了心梗等其他问题。记录不良多半是手臂没放稳或手指没一直按住表冠。
+- **心率提醒**：高/低心率提醒只在用户静止约 10 分钟、心率持续越过阈值时触发；运动中不会触发。
 - **VO2max**：只有户外步行、户外跑步、徒步会更新，室内运动不会。比实验室测量平均低约 6，±1 是噪音，几周内持续变化 2–3 才有意义。
 
 ## 已知数据坑
