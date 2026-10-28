@@ -68,7 +68,7 @@ def _hours_setting(name: str, default: str) -> tuple[int, int] | None:
 BUTLER_ALERTS = os.getenv("BUTLER_ALERTS", "on").strip().lower() not in {"off", "0", "false", "no"}
 QUIET_HOURS = _hours_setting("BUTLER_QUIET_HOURS", "23-8")
 # The morning-report routine runs every hour of this window and writes the
-# report once last night's sleep has arrived, or at the last hour without it.
+# report once all of last night has arrived, or later without it (report_status).
 MORNING_REPORT_HOURS = _hours_setting("MORNING_REPORT_HOURS", "8-12") or (8, 12)
 
 _MIN_TOKEN_LEN = 32
@@ -1494,13 +1494,36 @@ def build_bundle(days: int = 14) -> dict:
     }
 
 
+# How long the morning report waits for the rest of a night that has partly
+# arrived, counted from the first hour of MORNING_REPORT_HOURS.
+_NIGHT_PARTS_WAIT_HOURS = 2
+
+
+def _night_complete(night: dict) -> bool:
+    """Whether everything about last night is in.
+
+    The phone sends a night in two uploads that can arrive an hour apart: the
+    sleep-times automation (when it began and ended, plus its stages) and the
+    metric CSV, whose rows up to the wake time give the night's HRV, breathing
+    and blood oxygen. A server that has never had sleep times waits for the
+    CSV's stages alone.
+    """
+    if not _load_sleep_times():
+        return (night.get("total_h") or 0) > 0
+    if not night.get("wake_time"):
+        return False
+    df = load_all_csv()
+    return not df.empty and df["Date/Time"].max() >= pd.Timestamp(night["wake_time"])
+
+
 def report_status(kind: str) -> dict:
     """Whether the ``kind`` report routine should write today's report now.
 
     Every report is due until it has been posted. The morning one also waits
     for last night's sleep: the phone uploads it only after it is unlocked,
     so the routine runs every hour of MORNING_REPORT_HOURS and writes once the
-    night is in, or at the last hour without it.
+    whole night is in. With only part of it in, it waits up to
+    _NIGHT_PARTS_WAIT_HOURS for the rest; with none of it, until the last hour.
     """
     now = _now()
     today = now.date().isoformat()
@@ -1515,7 +1538,17 @@ def report_status(kind: str) -> dict:
     if now.hour < first:
         return {**status, "due": False, "reason": f"too early: the morning report starts at {first:02d}:00"}
     if status["night_ready"]:
-        return {**status, "due": True, "reason": "last night's sleep has arrived"}
+        if _night_complete(night):
+            return {**status, "due": True, "reason": "last night's sleep has arrived"}
+        give_up = min(first + _NIGHT_PARTS_WAIT_HOURS, last)
+        if now.hour >= give_up:
+            return {**status, "due": True,
+                    "reason": f"part of last night (its bedtime and wake time, or the metrics up to the "
+                              f"wake time) is still missing at {give_up:02d}:00; write the report with what "
+                              "has arrived"}
+        return {**status, "due": False,
+                "reason": "only part of last night has arrived (the phone sends its sleep times and its "
+                          "metrics in separate uploads); a later run checks again"}
     if now.hour >= last:
         return {**status, "due": True,
                 "reason": f"last night's sleep is still missing at {last:02d}:00; write the report without it"}

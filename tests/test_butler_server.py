@@ -154,6 +154,40 @@ def test_the_morning_report_waits_for_last_nights_sleep(tmp_data_dir: Path, monk
     assert client.get("/api/report-status?kind=daily", headers=AUTH).status_code == 400
 
 
+def test_the_morning_report_waits_for_both_uploads_of_the_night(tmp_data_dir: Path, monkeypatch):
+    """The metric CSV and the sleep-times upload bring a night in separately,
+    often an hour apart; the report waits up to two hours for the second."""
+    def status(server, hour: int) -> dict:
+        monkeypatch.setattr(server, "_now", lambda: _at(hour, 5))
+        return _client(server).get("/api/report-status?kind=morning", headers=AUTH).json()
+
+    # The CSV's stages come first: wait for the bedtime and wake time.
+    server = _server(tmp_data_dir, monkeypatch, _at(8, 5))
+    (tmp_data_dir / "health_2.csv").write_text(_csv([(f"{TODAY} 00:00:00", {"Sleep Analysis [Total] (hr)": 6.3})]))
+    assert status(server, 8)["night_ready"] is True
+    assert status(server, 9)["due"] is False and "only part" in status(server, 9)["reason"]
+    assert status(server, 10)["due"] is True and "still missing at 10:00" in status(server, 10)["reason"]
+    _write_night(server, TODAY)
+    assert status(server, 8)["due"] is True and "has arrived" in status(server, 8)["reason"]
+
+    # The times come first: wait for the CSV rows up to the wake time.
+    server = _server(tmp_data_dir, monkeypatch, _at(8, 5), resting_today=None)
+    (tmp_data_dir / "health_2.csv").unlink()
+    _write_night(server, TODAY)
+    assert status(server, 9)["night_ready"] is True and status(server, 9)["due"] is False
+    assert status(server, 10)["due"] is True
+    (tmp_data_dir / "health_2.csv").write_text(_csv([(f"{TODAY} 06:50:00", {"Heart Rate (count/min)": 70})]))
+    assert status(server, 9)["due"] is False
+    (tmp_data_dir / "health_3.csv").write_text(_csv([(f"{TODAY} 07:45:00", {"Heart Rate (count/min)": 72})]))
+    assert status(server, 8)["due"] is True
+
+    # A server that never got sleep times goes by the CSV's stages alone.
+    for path in Path(server.SLEEP_DIR).glob("*.json"):
+        path.unlink()
+    (tmp_data_dir / "health_2.csv").write_text(_csv([(f"{TODAY} 00:00:00", {"Sleep Analysis [Total] (hr)": 6.3})]))
+    assert status(server, 8)["due"] is True
+
+
 def test_reports_of_each_kind_are_kept_apart(tmp_data_dir: Path, monkeypatch):
     server = _server(tmp_data_dir, monkeypatch, _at(20, 5))
     pushed = _pushes(server, monkeypatch)

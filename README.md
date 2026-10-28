@@ -127,7 +127,7 @@ routes, guarded by `Authorization: Bearer $REPORT_API_TOKEN`:
 
 | Route | Description |
 | --- | --- |
-| `GET /api/report-status?kind=morning` | Whether that report is due now. Each kind is due until it is posted; the morning one also waits for last night's sleep, from the first hour of `MORNING_REPORT_HOURS` (default `8-12`) until the last, when it is due without it. |
+| `GET /api/report-status?kind=morning` | Whether that report is due now. Each kind is due until it is posted; the morning one also waits for last night's sleep, from the first hour of `MORNING_REPORT_HOURS` (default `8-12`). It is due once the whole night is in: the sleep times and the metric CSV up to the wake time, which come in separate uploads. With only part of the night in it waits two more hours, with none of it until the last hour, then it is due without it. |
 | `GET /api/bundle?days=14` | Everything a report needs in one JSON document: freshness, today's readiness, baselines, daily sleep / vitals / fitness, workouts, ECGs, heart rate notifications, moods, other metrics, the alerts pushed, today's reports, the latest weekly and monthly summaries. |
 | `POST /api/report` | `{"content", "title"?, "date"?, "kind"?, "push"?, "replace"?}` — saves the report like `save_health_report` and pushes it to the configured channels. A second report of the same kind and date answers 409 unless `replace` is true. |
 

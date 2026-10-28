@@ -31,8 +31,10 @@ the report is not due, so a routine may fire more often than it writes:
 - The morning report waits for last night's sleep, which the phone uploads
   only once it is unlocked. It runs every hour of `MORNING_REPORT_HOURS`
   (`8-12` by default, in the server's `.env`; change the routine's schedule
-  with it) and writes on the first run after the night has arrived, or at the
-  last hour without it.
+  with it) and writes on the first run after the whole night has arrived: the
+  sleep-times automation and the metric CSV come in separate uploads, often an
+  hour apart. With only one of them in it waits two more hours; with neither,
+  it writes at the last hour without the night.
 - A report of a kind is posted once per date: a second `POST` answers 409, so
   overlapping runs never push it twice.
 
