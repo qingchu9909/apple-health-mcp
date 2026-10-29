@@ -21,45 +21,116 @@ Once deployed, Claude can answer questions like *"how did my HRV trend last
 week?"* or *"summarize my sleep over the past 14 days"* against your real
 Apple Health data — without uploading anything to a third-party service.
 
+> **About this fork.** It adds a one-command installer (`deploy/install.sh`,
+> one domain, Caddy or Nginx, including Nginx in Docker, systemd), workouts, push notifications
+> (Telegram, Server酱, PushPlus), alerts the server pushes on its own when
+> the data departs from your own baselines, an HTTPS API that Claude's
+> scheduled cloud routines use for morning, evening, weekly and monthly
+> reports, time-zone handling, separate tokens
+> for upload / connector / report API, and fixes for duplicate exports and
+> unauthenticated uploads. Chinese setup guide: [docs/SETUP.zh.md](docs/SETUP.zh.md);
+> Chinese report routines: [routines/](routines/).
+
 ---
 
 ## Features
 
-Twelve MCP tools — four return compact JSON daily records, two read/write a
-persisted daily HEALTH REPORT, and six raw tools remain as the escape hatch.
+Fifteen MCP tools — four return compact JSON daily records, two cover
+workouts, two read/write a persisted daily HEALTH REPORT, one pushes a
+message to your phone, and six raw tools remain as the escape hatch.
 
 **Structured (one record per day per domain, JSON):**
 
 | Tool | Description | Default window |
 | --- | --- | --- |
-| `get_daily_sleep` | Sleep stages + wrist temperature, one record per night. | 14 days |
+| `get_daily_sleep` | Sleep stages + wrist temperature, one record per night; bedtime and wake time when the sleep automation is set up. | 14 days |
 | `get_daily_fitness` | Steps, distance, energy, exercise/stand time, flights, walking speed, walking HR, VO2 max — aggregated per day. | 14 days |
-| `get_daily_vitals` | Heart-rate min/max/avg, resting HR, HRV, respiratory rate, blood-oxygen — aggregated per day — plus an overnight CGM glucose profile (mean/min/max, % time in 3.9–7.8 mmol/L, sample count over 22:00–08:00, keyed to the wake date). | 14 days |
+| `get_daily_vitals` | Heart-rate min/max/avg, resting HR, HRV, respiratory rate, blood-oxygen — aggregated per day — plus the night's HRV, respiratory rate and blood oxygen (readings between bedtime and wake time, keyed to the wake date) and an overnight CGM glucose profile (mean/min/max, % time in 3.9–7.8 mmol/L, sample count over 22:00–08:00). | 14 days |
 | `get_baselines` | p10/p50/p90 + yesterday + 7d-vs-30d trend for every headline metric. | 30 days |
 
-**Daily HEALTH REPORT (read/write):**
+**Workouts, ECG, heart rate notifications and logged moods** (JSON automations):
+
+| Tool | Description | Default window |
+| --- | --- | --- |
+| `get_workouts` | One compact record per workout: type, start/end, duration, distance, energy, heart rate, elevation, conditions. | 14 days |
+| `get_workout_detail` | Minute-by-minute heart rate, heart-rate recovery, steps and metadata for one workout. | n/a |
+| `get_ecg` | ECG recordings: classification (sinus rhythm, AFib, inconclusive…), average heart rate, severity. | 90 days |
+| `get_heart_rate_notifications` | High, low and irregular-rhythm notifications with the threshold and the heart rate / HRV around them. | 30 days |
+| `get_state_of_mind` | Moods and emotions the user logged (daily mood or momentary emotion, valence, labels, associations). | 14 days |
+
+**Push:**
 
 | Tool | Description |
 | --- | --- |
-| `save_health_report` | Persist a markdown report at `<REPORTS_DIR>/<YYYY-MM-DD>.md`. Used by the scheduled report-generation routine. |
-| `get_health_report` | Read a report by date, or — with no `date` arg — the most recent report within `max_age_days`. The Fitness Coach Agent uses this to fetch each morning's briefing. |
+| `send_message` | Sends a message to every configured channel (Telegram, Server酱, PushPlus). |
 
-See [`routines/README.md`](routines/README.md) for how to set up the
-scheduled remote agent that calls `save_health_report` every morning.
+**HEALTH REPORTS (read/write):**
+
+| Tool | Description |
+| --- | --- |
+| `save_health_report` | Persist a markdown report at `<REPORTS_DIR>/<YYYY-MM-DD>-<kind>.md`, `kind` being `morning`, `evening`, `weekly` or `monthly` (`<YYYY-MM-DD>.md` without one). Used by the scheduled report routines. |
+| `get_health_report` | Every report of a date, or — with no `date` arg — of the most recent day within `max_age_days`, plus the newest weekly and monthly summaries, so a fresh chat gets the long view in one call. |
+
+See [`routines/README.md`](routines/README.md) for the scheduled routines
+that write the morning, evening, weekly and monthly reports.
 
 **Raw / escape hatch:**
 
 | Tool | Description | Default window |
 | --- | --- | --- |
-| `list_metrics` | Lists every health metric with at least one data point. | n/a |
-| `get_latest` | Most recent non-empty snapshot across all metrics. | n/a |
-| `get_metric` | Time series for a single metric. | 30 days |
-| `get_summary` | avg/min/max/last for the headline metrics. | 7 days |
-| `get_sleep` | Raw sleep + wrist-temp rows. | 14 days |
-| `get_fitness` | Raw fitness + HR rows. | 14 days |
+| `list_metrics` | Lists every health metric with at least one data point, then how many ECG recordings, heart rate notifications, logged moods and nights with bedtime / wake time are on record. | n/a |
+| `get_latest` | Each metric's latest reading and its time; for totals such as steps, the latest day's total so far. | n/a |
+| `get_metric` | Time series for a single metric; `ecg`, `heart_rate_notifications`, `state_of_mind` and `sleep_times` return what the dedicated tools return, and `readiness` returns today's readiness (below). | 30 days |
+| `get_summary` | avg/min/max/last of the daily values of the headline metrics (today so far apart for totals), then today's readiness. | 7 days |
+| `get_sleep` | Raw sleep + wrist-temp rows, then each night's bedtime and wake time. | 14 days |
+| `get_fitness` | Fitness + HR, one row per day. | 14 days |
 
-The CSV exports are daily aggregates with 100+ columns, so any of those
-columns can be queried via `get_metric` even if no dedicated tool wraps them.
+The CSV exports have 100+ columns, so any of those columns can be queried via
+`get_metric` even if no dedicated tool wraps them. Exports grouped by day and by
+minute both work, also side by side: where a day has both, the minute rows win.
+
+Claude's connectors can keep the tool list they first saw, so a connector
+added before `get_ecg`, `get_heart_rate_notifications` and
+`get_state_of_mind` existed may not offer them (nor describe the bedtime
+fields of `get_daily_sleep`); `list_metrics`, `get_metric`, `get_sleep` and
+`get_summary` lead to the same data.
+
+**Today's readiness** (`get_metric("readiness")`, the last line of
+`get_summary`, and the `readiness` section of `/api/bundle`) weighs last
+night's sleep, the night's HRV and the resting heart rate against your own
+recent values: `good` (train hard), `normal`, `easy` (keep it light), `rest`,
+or `unknown` (no data from last night), with the reasons and an alert for
+anything that clearly departs from your baseline. The rules live in
+[`mcp/butler.py`](mcp/butler.py).
+
+**Alerts.** Every five minutes the MCP server checks the newest uploads and
+pushes, once, anything that clearly departs from your own baselines: night
+HRV well below your recent nights, resting heart rate 7 bpm or more above its
+30-day median (today's only from 18:00, since the watch revises it during the
+day; before that yesterday's), sleeping wrist temperature +0.5 °C, sleeping respiratory rate
++3 breaths/min, blood oxygen under 92 % two nights running, and the watch's
+high / low / irregular heart rate notifications or an AFib ECG. Findings of
+the same pass share one push; nothing goes out in the quiet hours
+(`BUTLER_QUIET_HOURS=23-8`, held until they end). `BUTLER_ALERTS=off` stops
+the pushes. What went out is kept in `BUTLER_DIR/state.json`, and the reports
+see it as `alerts_sent`.
+
+**Telegram commands.** The bot also answers your own messages (from
+`TELEGRAM_CHAT_ID` only) with a few fixed commands, straight from the data
+and with no AI behind them: `/today` (readiness, last night and today's
+activity so far), `/sleep` (last night), `/report` (the newest report), and
+the words 今天, 睡眠, 早报, 晚报, 周报, 月报. Anything else gets the list.
+`TELEGRAM_COMMANDS=off` keeps the bot push-only.
+
+**HTTP API for scheduled routines.** Claude's scheduled cloud routines cannot
+attach a custom connector, so the MCP server also exposes plain HTTPS
+routes, guarded by `Authorization: Bearer $REPORT_API_TOKEN`:
+
+| Route | Description |
+| --- | --- |
+| `GET /api/report-status?kind=morning` | Whether that report is due now. Each kind is due until it is posted; the morning one also waits for last night's sleep, from the first hour of `MORNING_REPORT_HOURS` (default `8-12`). It is due once the whole night is in: the sleep times and the metric CSV up to the wake time, which come in separate uploads. With only part of the night in it waits two more hours, with none of it until the last hour, then it is due without it. |
+| `GET /api/bundle?days=14` | Everything a report needs in one JSON document: freshness, today's readiness, baselines, daily sleep / vitals / fitness, workouts, ECGs, heart rate notifications, moods, other metrics, the alerts pushed, today's reports, the latest weekly and monthly summaries. |
+| `POST /api/report` | `{"content", "title"?, "date"?, "kind"?, "push"?, "replace"?}` — saves the report like `save_health_report` and pushes it to the configured channels. A second report of the same kind and date answers 409 unless `replace` is true. |
 
 ---
 
@@ -69,18 +140,28 @@ columns can be queried via `get_metric` even if no dedicated tool wraps them.
 apple-health-mcp/
 ├── ingest/main.py             FastAPI ingest service (port 8001)
 ├── mcp/server.py              FastMCP MCP server     (port 8002)
+├── mcp/butler.py              Readiness and alert rules (personal baselines)
+├── mcp/notify.py              Telegram / Server酱 / PushPlus delivery
+├── mcp/telegram_bot.py        Answers the Telegram commands
 ├── requirements.txt           Pinned Python dependencies
-├── .env.example               Template for the shared secret + data + reports paths
+├── .env.example               Tokens, paths, time zone and push channels
 ├── deploy/
-│   ├── nginx/
-│   │   ├── ingest.example.conf   Reverse-proxy template for /ingest
-│   │   └── mcp.example.conf      Reverse-proxy template for /mcp/<token>
-│   └── supervisor/
-│       ├── health-ingest.conf    process supervisor unit
-│       └── health-mcp.conf       process supervisor unit
+│   ├── install.sh             One-command installer (Debian/Ubuntu, run as root)
+│   ├── update.sh              Pull the latest code and re-run the installer
+│   ├── show-config.sh         Print the values for the phone, connector and routine
+│   ├── status.sh              Recent uploads from the phone and the data on disk
+│   ├── systemd/               Units used by install.sh
+│   ├── caddy/Caddyfile.example                 Single-domain Caddy site
+│   ├── nginx/health.single-domain.example.conf Single-domain Nginx site
+│   ├── nginx/health.docker.example.conf        Same, for Nginx in Docker (kejilion.sh LDNMP)
+│   ├── nginx/{ingest,mcp}.example.conf         Original two-subdomain templates
+│   └── supervisor/            Original process supervisor units
+├── docs/SETUP.zh.md           Chinese step-by-step setup guide
 ├── routines/
-│   ├── health-report.prompt.md   Prompt source for the daily-report routine
-│   └── README.md                 How to schedule the routine via /schedule
+│   ├── {morning,evening,weekly,monthly}-report.zh.prompt.md
+│   │                             Chinese report routines using the HTTPS API
+│   ├── health-report.prompt.md   Prompt source for the daily-report routine (MCP)
+│   └── README.md                 How to schedule the routines
 └── tests/
     ├── test_loader.py
     ├── test_smart_tools.py
@@ -109,6 +190,24 @@ on disk just mirrors the directories above.
 ---
 
 ## Quick start
+
+On a Debian or Ubuntu VPS, as root, with a domain whose A record points at it:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/<you>/apple-health-mcp/main/deploy/install.sh \
+  | DOMAIN=health.example.com USER_TZ=Europe/London TELEGRAM_BOT_TOKEN=123:abc bash
+```
+
+It installs everything under `/opt/health`, configures HTTPS (Caddy when port 443
+is free, leaving port 80 alone; otherwise an existing Caddy or Nginx, or an Nginx
+container with host networking such as the kejilion.sh LDNMP stack, where it adds
+a site to the container's `conf.d` and gets the certificate with acme.sh), checks every endpoint,
+and sends the values to enter on the phone and in Claude to your push channel.
+Re-running it is safe; `deploy/update.sh` updates. Settings are documented at
+the top of the script; the steps on the phone and in Claude are in
+[docs/SETUP.zh.md](docs/SETUP.zh.md).
+
+## Manual install (reference)
 
 The reference deployment uses Ubuntu 22.04 with [aaPanel] for Nginx + Supervisor.
 Adapt freely if you prefer plain `systemd` and hand-rolled Nginx.
@@ -200,6 +299,10 @@ The second call should return a JSON list of the six tools.
 
 ### 5. iPhone — Health Auto Export
 
+Run the app in English. It names the CSV columns in its own language and the
+server only reads the English names, so on a phone set to another language pick
+English under **Settings → Apps → Health Auto Export → Language**.
+
 Open the app, go to **Automations**, and add a REST API automation:
 
 | Field | Value |
@@ -208,10 +311,23 @@ Open the app, go to **Automations**, and add a REST API automation:
 | HTTP method | `POST` |
 | Authorization header | `Bearer <your token>` |
 | Format | `CSV` |
-| Date range | `Since Last Sync` |
-| Sync cadence | `1 day` |
+| Date range | `Default` (yesterday in full plus today so far; overlapping uploads are merged, newest value wins) |
+| Sync cadence | `1 hour` |
 | Health metrics | `All Selected` |
 | Summarize Data | `ON` |
+
+Add a second automation with the same URL and header for **Workouts**:
+format `JSON`, export version `2`, *Include Workout Metrics* on, *Include
+Route Data* off, time grouping `Minutes`, date range `Default`.
+
+Optionally add a third automation for **Health Metrics** with only *Sleep
+Analysis* selected, format `JSON`, export version `2`, *Summarize Data* on,
+time grouping `Days`, date range `Default`: the CSV export only has sleep
+durations, the JSON one also says when each night began and ended (`bedtime`
+/ `wake_time` in `get_daily_sleep`). Each automation carries one data type,
+so **ECG**, **Heart Rate Notifications** and **State of Mind** take one JSON
+automation each (`get_ecg`, `get_heart_rate_notifications`,
+`get_state_of_mind`; ECG voltage samples are dropped).
 
 Tap **Run Now** once to push your historical data. The first run can be a few
 MB and may take a few seconds.
@@ -223,7 +339,7 @@ In Claude (web or iOS): **Settings → Connectors → Add custom connector**
 | Field | Value |
 | --- | --- |
 | Name | `Apple Health MCP` |
-| URL | `https://mcp.example.com/mcp/<your token>` |
+| URL | `https://mcp.example.com/mcp/<MCP_PATH_TOKEN>` (falls back to `HEALTH_TOKEN` when unset) |
 | Authentication | None *(token is in the URL path)* |
 | Transport | Streamable HTTP |
 
@@ -260,10 +376,11 @@ updating the URL in both Health Auto Export and the Claude connector.
 
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
-| `401 Unauthorized` from `/ingest` | Header not `Bearer <token>` exactly. | Re-check the iPhone automation's Authorization header. |
+| `401 Unauthorized` from `/ingest` | Wrong or missing Authorization header. | `bash /opt/health/app/deploy/status.sh` lists recent uploads and why each refused one failed. |
 | `421 Misdirected Request` from MCP | HTTP/2 enabled on the MCP vhost. | Remove `http2` from `listen 443 ssl` for the MCP server block. |
 | `Missing column ... 'Date/Time'` | A CSV is wrapped in a multipart envelope. | Already handled by `_read_csv_tolerant`; if you see it, check the file is actually CSV-shaped. |
 | Tools return *"No health data available yet."* | No CSVs in `DATA_DIR`. | Confirm Health Auto Export has run successfully. |
+| Tools return *"No readable health data"*, or only workouts show up | Health Auto Export named the CSV columns in another language (e.g. `日期/時間` instead of `Date/Time`). | Set the app's language to English (see step 5) and export the missing days again. `status.sh` counts the unreadable files. |
 | Connector shows zero tools | Server unreachable, wrong path, or DNS-rebinding rejection. | Check `error.log`; confirm `mcp.settings.transport_security.enable_dns_rebinding_protection = False`. |
 
 Useful commands:
