@@ -106,7 +106,8 @@ anything that clearly departs from your baseline. The rules live in
 **Alerts.** Every five minutes the MCP server checks the newest uploads and
 pushes, once, anything that clearly departs from your own baselines: night
 HRV well below your recent nights, resting heart rate 7 bpm or more above its
-30-day median, sleeping wrist temperature +0.5 °C, sleeping respiratory rate
+30-day median (today's only from 18:00, since the watch revises it during the
+day; before that yesterday's), sleeping wrist temperature +0.5 °C, sleeping respiratory rate
 +3 breaths/min, blood oxygen under 92 % two nights running, and the watch's
 high / low / irregular heart rate notifications or an AFib ECG. Findings of
 the same pass share one push; nothing goes out in the quiet hours

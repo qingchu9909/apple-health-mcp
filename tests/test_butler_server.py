@@ -14,6 +14,7 @@ from .conftest import REPO_ROOT, _import_server
 API_TOKEN = "a" * 64
 AUTH = {"Authorization": f"Bearer {API_TOKEN}"}
 TODAY = date(2026, 11, 10)
+YESTERDAY = TODAY - timedelta(days=1)
 
 
 def _at(hour: int, minute: int = 0) -> datetime:
@@ -27,8 +28,9 @@ def _csv(rows: list[tuple[str, dict]]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _server(tmp_data_dir: Path, monkeypatch, now: datetime, resting_today: float | None = 58.0):
-    """30 ordinary days of resting heart rate, 8 ordinary nights, then today."""
+def _server(tmp_data_dir: Path, monkeypatch, now: datetime, resting_today: float | None = 58.0,
+            resting_yesterday: float = 58.0):
+    """30 ordinary days of resting heart rate (yesterday's can differ), 8 ordinary nights, then today."""
     monkeypatch.setenv("USER_TZ", "Asia/Shanghai")
     monkeypatch.setenv("REPORT_API_TOKEN", API_TOKEN)
     server = _import_server(tmp_data_dir)
@@ -36,7 +38,7 @@ def _server(tmp_data_dir: Path, monkeypatch, now: datetime, resting_today: float
     rows = []
     for back in range(30, 0, -1):
         day = TODAY - timedelta(days=back)
-        rows.append((f"{day} 07:40:00", {"Resting Heart Rate (count/min)": 58}))
+        rows.append((f"{day} 07:40:00", {"Resting Heart Rate (count/min)": resting_yesterday if back == 1 else 58}))
         if back <= 8:
             rows.append((f"{day} 00:00:00", {"Sleep Analysis [Total] (hr)": 7.2}))
             rows += [(f"{day} 0{h}:15:00", {"Heart Rate Variability (ms)": 60}) for h in range(1, 7)]
@@ -70,7 +72,7 @@ def _client(server) -> TestClient:
 
 
 def test_each_alert_goes_out_once_and_waits_out_the_quiet_hours(tmp_data_dir: Path, monkeypatch):
-    server = _server(tmp_data_dir, monkeypatch, _at(2), resting_today=67)
+    server = _server(tmp_data_dir, monkeypatch, _at(2), resting_yesterday=67)
     sent = _pushes(server, monkeypatch)
 
     server.butler_tick()  # 02:00: only the welcome, which answers the user's own update
@@ -85,14 +87,29 @@ def test_each_alert_goes_out_once_and_waits_out_the_quiet_hours(tmp_data_dir: Pa
     server.butler_tick()
     assert len(sent) == 2
     state = json.loads((Path(server.BUTLER_DIR) / "state.json").read_text(encoding="utf-8"))
-    assert set(state["sent"]) == {"welcome", f"{TODAY}:resting_hr"}
+    assert set(state["sent"]) == {"welcome", f"{YESTERDAY}:resting_hr"}
     bundle = server.build_bundle(days=7)
     assert [entry["title"] for entry in bundle["alerts_sent"]] == ["健康提醒：静息心率偏高"]
     assert bundle["readiness"]["level"] == "rest"
 
 
+def test_todays_resting_heart_rate_counts_only_once_it_has_settled(tmp_data_dir: Path, monkeypatch):
+    """The watch revises today's value through the day: a high morning reading
+    neither alerts nor sets the readiness until the evening."""
+    server = _server(tmp_data_dir, monkeypatch, _at(9), resting_today=73)
+    sent = _pushes(server, monkeypatch)
+    server.butler_tick()
+    assert [title for title, _ in sent] == ["健康管家提醒已开启"]
+    signal = next(s for s in server.build_bundle(days=7)["readiness"]["signals"] if s["name"] == "resting_hr")
+    assert signal["value"] == 58 and signal["text"].startswith("昨天静息心率")
+
+    monkeypatch.setattr(server, "_now", lambda: _at(18, 5))
+    server.butler_tick()
+    assert sent[-1][0] == "健康提醒：静息心率偏高" and "今天静息心率 73" in sent[-1][1]
+
+
 def test_a_push_no_channel_took_is_tried_again(tmp_data_dir: Path, monkeypatch):
-    server = _server(tmp_data_dir, monkeypatch, _at(9), resting_today=67)
+    server = _server(tmp_data_dir, monkeypatch, _at(9), resting_yesterday=67)
     sent = _pushes(server, monkeypatch, result="failed: HTTP 502")
     server.butler_tick()
     assert len(sent) == 2
@@ -102,7 +119,7 @@ def test_a_push_no_channel_took_is_tried_again(tmp_data_dir: Path, monkeypatch):
 
 
 def test_nothing_is_pushed_while_the_state_cannot_be_saved(tmp_data_dir: Path, monkeypatch):
-    server = _server(tmp_data_dir, monkeypatch, _at(9), resting_today=67)
+    server = _server(tmp_data_dir, monkeypatch, _at(9), resting_yesterday=67)
     Path(server.BUTLER_DIR).rmdir()
     Path(server.BUTLER_DIR).write_text("not a folder")
     sent = _pushes(server, monkeypatch)
@@ -111,11 +128,11 @@ def test_nothing_is_pushed_while_the_state_cannot_be_saved(tmp_data_dir: Path, m
 
 
 def test_no_channel_or_alerts_off_means_no_pass(tmp_data_dir: Path, monkeypatch):
-    server = _server(tmp_data_dir, monkeypatch, _at(9), resting_today=67)
+    server = _server(tmp_data_dir, monkeypatch, _at(9), resting_yesterday=67)
     monkeypatch.setattr(server.notify, "configured_channels", lambda: [])
     assert server.butler_tick() == []
     monkeypatch.setenv("BUTLER_ALERTS", "off")
-    server = _server(tmp_data_dir, monkeypatch, _at(9), resting_today=67)
+    server = _server(tmp_data_dir, monkeypatch, _at(9), resting_yesterday=67)
     _pushes(server, monkeypatch)
     assert server.butler_tick() == []
 

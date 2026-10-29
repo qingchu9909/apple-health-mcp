@@ -32,6 +32,11 @@ SLEEP_NIGHTS, SLEEP_MIN_NIGHTS = 14, 4
 RESTING_HR_DAYS, RESTING_HR_MIN_DAYS = 30, 10
 SHORT_BASELINE_NIGHTS, SHORT_BASELINE_MIN = 7, 4
 
+# The watch writes today's resting heart rate early and revises it as the day
+# goes on (2026-10-28 read 73 at 09:00 and 63 that night), so today's value
+# counts from this hour; before it, yesterday's settled one stands in.
+RESTING_HR_SETTLED_HOUR = 18
+
 # Alert thresholds.
 HRV_ALERT_SD = -1.5  # and at most HRV_ALERT_RATIO of the mean
 HRV_ALERT_RATIO = 0.85
@@ -205,8 +210,12 @@ def _hrv_check(snap: Snapshot, nightly: dict[str, dict]) -> _Check | None:
 def _resting_hr_check(snap: Snapshot) -> _Check | None:
     series = _series(snap.days, "resting_hr")
     yesterday = (date.fromisoformat(snap.today) - timedelta(days=1)).isoformat()
-    day = snap.today if snap.today in series else yesterday if yesterday in series else None
-    if day is None:
+    settled = snap.now.hour >= RESTING_HR_SETTLED_HOUR
+    if snap.today in series and (settled or yesterday not in series):
+        day = snap.today
+    elif yesterday in series:
+        day = yesterday
+    else:
         return None
     value = series[day]
     label = "今天" if day == snap.today else "昨天"
@@ -218,7 +227,7 @@ def _resting_hr_check(snap: Snapshot) -> _Check | None:
     text = f"{label}静息心率 {value:.0f}（你 30 天的中位数 {median:.0f}）"
     status = "low" if delta >= 5 else "good" if delta <= 1 else "ok"
     check = _Check("resting_hr", value, "bpm", text, status, median)
-    if delta >= RESTING_HR_ALERT_BPM:
+    if delta >= RESTING_HR_ALERT_BPM and (day != snap.today or settled):
         before = (date.fromisoformat(day) - timedelta(days=1)).isoformat()
         streak = before in series and series[before] - median >= 5
         check.alert = Finding(

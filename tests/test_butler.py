@@ -105,9 +105,13 @@ def test_a_high_resting_heart_rate_says_when_it_is_the_second_day():
     days = {_day(-i): {"date": _day(-i), "resting_hr": 58.0} for i in range(2, 25)}
     days[_day(-1)] = {"date": _day(-1), "resting_hr": 64.0}
     days[TODAY] = {"date": TODAY, "resting_hr": 66.0}
-    found = butler.findings(butler.Snapshot(now=NOW, days=days))
+    evening = NOW.replace(hour=butler.RESTING_HR_SETTLED_HOUR)
+    found = butler.findings(butler.Snapshot(now=evening, days=days))
     assert [f.key for f in found] == [f"{TODAY}:resting_hr"]
     assert "今天静息心率 66" in found[0].text and "高 8" in found[0].text and "连续两天" in found[0].text
+
+    # In the morning today's value is still moving; yesterday's (6 above) does not alert.
+    assert butler.findings(butler.Snapshot(now=NOW, days=days)) == []
 
     # Before today's value is in, yesterday's stands in, under yesterday's key.
     del days[TODAY]
